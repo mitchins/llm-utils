@@ -173,6 +173,7 @@ def main():
                         help="Optional comma-separated list of labels to clamp to. If not provided, all seen labels are used.")
     # New argument for text field
     parser.add_argument("--text-field", type=str, default="text", help="Name of the input text field (default: 'text')")
+    parser.add_argument("--logging-dir", type=str, default="logs", help="Directory for TensorBoard logs")
     args = parser.parse_args()
     data_path = Path(args.data_path)
     if not data_path.exists():
