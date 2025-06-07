@@ -22,6 +22,7 @@ parser = argparse.ArgumentParser(
     description="Generic seq2seq trainer for tasks like summarization, translation, paraphrasing"
 )
 parser.add_argument("--debug", action="store_true", help="Enable debug output")
+parser.add_argument("--allow-empty-output", action="store_true", help="Permit empty strings in the target/output column")
 parser.add_argument(
     "--batch-size", type=int, default=None,
     help="Override auto-scaled per-device batch size; set to 1 for effectively no batching"
@@ -65,6 +66,7 @@ parser.add_argument(
     help="Minimum absolute improvement on the monitored metric to reset early-stopping patience"
 )
 parser.add_argument("--validation-size", type=float, default=0.10, help="Percentage of the dataset to use as validation set (default: 0.10)")
+parser.add_argument("--stratify-length", action="store_true", help="Stratify validation split by length of target output (token count or JSON element count)")
 parser.add_argument("--calculate-meteor", action="store_true", help="Enable calculation of METEOR metric during evaluation")
 parser.add_argument("--raw-metrics", action="store_true", help="Output ROUGE and METEOR as raw 0–1 values instead of percentages")
 parser.add_argument(
@@ -118,17 +120,43 @@ def main():
         df = pd.read_csv(Path(args_cli.data_path))
     else:
         df = pd.read_json(Path(args_cli.data_path), lines=True)
-    dataset = Dataset.from_pandas(df)
 
-    total_examples = len(dataset)
-    eval_size = int(total_examples * args_cli.validation_size)
-    train_size = total_examples - eval_size
+    # Sanity check: no empty input or output rows
+    num_empty_input = (df[args_cli.input_col].astype(str).str.strip() == "").sum()
+    num_empty_output = (df[args_cli.target_col].astype(str).str.strip() == "").sum()
 
-    logger.info(f"📊 Total examples: {total_examples}, using {eval_size} for validation set ({(eval_size/total_examples)*100:.2f}%)")
+    if num_empty_input > 0:
+        raise ValueError(f"❌ Found {num_empty_input} empty input rows in '{args_cli.input_col}' — these must be removed or filled.")
 
-    split = dataset.train_test_split(test_size=eval_size/total_examples, seed=42)
-    train_dataset = split["train"]
-    val_dataset = split["test"]
+    if num_empty_output > 0 and not args_cli.allow_empty_output:
+        raise ValueError(f"❌ Found {num_empty_output} empty output rows in '{args_cli.target_col}'. Use --allow-empty-output to bypass.")
+
+    if args_cli.stratify_length:
+        def strat_length(output):
+            try:
+                output = output.strip()
+                if output.startswith("{") or output.startswith("["):
+                    parsed = json.loads(output)
+                    return len(parsed) if isinstance(parsed, (list, dict)) else 0
+                else:
+                    return len(output.split())
+            except Exception:
+                return 0
+
+        df["length_bin"] = pd.qcut(df[args_cli.target_col].map(strat_length), q=5, duplicates="drop")
+        val_df = df.groupby("length_bin", group_keys=False).apply(lambda g: g.sample(frac=args_cli.validation_size))
+        train_df = df.drop(val_df.index)
+        train_dataset = Dataset.from_pandas(train_df)
+        val_dataset = Dataset.from_pandas(val_df)
+    else:
+        dataset = Dataset.from_pandas(df)
+        total_examples = len(dataset)
+        eval_size = int(total_examples * args_cli.validation_size)
+        train_size = total_examples - eval_size
+        logger.info(f"📊 Total examples: {total_examples}, using {eval_size} for validation set ({(eval_size/total_examples)*100:.2f}%)")
+        split = dataset.train_test_split(test_size=eval_size/total_examples, seed=42)
+        train_dataset = split["train"]
+        val_dataset = split["test"]
 
     model_checkpoint = args_cli.model_checkpoint
 
@@ -140,12 +168,20 @@ def main():
     if args_cli.max_input_length > 2048 and "longt5" not in model_checkpoint.lower():
         logger.warning(f"⚠️ Specified max_input_length={args_cli.max_input_length} but model '{model_checkpoint}' may not support long contexts. Proceed with caution.")
 
+    overflow_counter = {"count": 0}
+
     def tokenize_fn(example):
         encoding = tokenizer(example[args_cli.input_col], truncation=True, max_length=args_cli.max_input_length)
+        # Count how often original tokenized input exceeds the max length
+        if len(tokenizer(example[args_cli.input_col]).input_ids) > args_cli.max_input_length:
+            overflow_counter["count"] += 1
         return encoding
 
     tokenized_train = train_dataset.map(tokenize_fn, batched=True)
     tokenized_val = val_dataset.map(tokenize_fn, batched=True)
+
+    if overflow_counter["count"] > 0:
+        logger.warning(f"⚠️ {overflow_counter['count']} examples exceeded max_input_length={args_cli.max_input_length} and were truncated.")
 
     # Prepare model
     model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
@@ -213,6 +249,7 @@ def main():
         return final_metrics
 
     def compute_metrics(pred):
+        import numpy as np
         if args_cli.fields:
             field_specs = dict(item.split(":") for item in args_cli.fields.split(","))
             return compute_structured_metrics(pred, field_specs)
@@ -220,7 +257,21 @@ def main():
         predictions = pred.predictions
         labels = pred.label_ids
 
-        decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+        # Handle case where predictions are logits instead of token IDs
+        if getattr(predictions, "ndim", None) == 3:  # shape: [batch, seq_len, vocab]
+            predictions = np.argmax(predictions, axis=-1)
+
+        # Clamp predictions to valid token ID range
+        vocab_size = tokenizer.vocab_size
+        predictions = np.clip(predictions, 0, vocab_size - 1)
+
+        try:
+            decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+        except OverflowError as e:
+            logger.error("❌ Overflow during decoding. Saving raw predictions to 'debug_predictions.npy'.")
+            np.save("debug_predictions.npy", predictions)
+            raise e
+
         decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 
         decoded_preds = [pred.strip() for pred in decoded_preds]
