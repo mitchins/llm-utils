@@ -155,7 +155,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-batching", action="store_true", help="Disable batching to reduce VRAM usage")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
-    parser.add_argument("--output-dir", type=str, default="ranker_model", help="Output directory for model and encoder")
+    parser.add_argument("--output-dir", type=str, default="bert_model", help="Output directory for model and encoder")
     parser.add_argument("--clean", action="store_true", help="Remove output_dir before training if it exists")
     parser.add_argument("--total-epochs", type=int, default=15, help="Total number of training epochs (default: 15)")
     parser.add_argument("--task", choices=["classification", "regression"], default="classification", help="Specify which head to train")
@@ -497,7 +497,7 @@ def main():
             EpochNormalizedLogger(writer),
             MemoryUsageLogger(model, args.model_checkpoint, base_batch_size, input_size=(1024 if "deberta" in model_checkpoint.lower() else 512)),
             *([ExtraEvalCallback(model, monitor_eval_loader, writer)] if monitor_eval_loader else []),
-            ManualEarlyStopCallback(stop_file="ranker_model/stop_training.txt"),
+            ManualEarlyStopCallback(stop_file=os.path.join(args.output_dir, "stop_training.txt")),
         ],
         compute_metrics=compute_metrics,
         args_cli=args,
@@ -531,7 +531,7 @@ def main():
 
     # Save final model to versioned path
     logger.info(f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
-    root = Path("ranker_model")
+    root = Path(args.output_dir)
     i = 1
     while Path(f"{root}-v{i}").exists():
         i += 1
