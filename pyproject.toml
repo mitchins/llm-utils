@@ -1,6 +1,6 @@
 [project]
 name = "llm-utils"
-version = "0.3.4"
+version = "0.3.5"
 description = "Lightweight utilities for LLM data parsing and training"
 authors = [
     { name="Mitchell Currie" }
@@ -26,8 +26,9 @@ dependencies = [
 [project.urls]
 "Homepage" = "https://github.com/mitchins/llm-utils"
 
-[tool.setuptools]
-packages = ["llm_utils"]
+
+[tool.setuptools.packages.find]
+include = ["llm_utils*"]
 
 [build-system]
 requires = ["setuptools", "wheel"]
