@@ -167,7 +167,7 @@ def main():
     parser.add_argument("--penalize-class", type=str, default=None,
         help="Class label (e.g. 'Neutral') to apply extra penalties during loss computation.")
     # New argument for label field
-    parser.add_argument("--label-field", type=str, default="tone", help="Name of the label column in the input dataset (default: 'tone')")
+    parser.add_argument("--label-field", type=str, default="label", help="Name of the label column in the input dataset (default: 'label')")
     # New argument for label list
     parser.add_argument("--label-list", type=str, default=None,
                         help="Optional comma-separated list of labels to clamp to. If not provided, all seen labels are used.")
