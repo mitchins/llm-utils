@@ -183,6 +183,7 @@ def main():
     parser.add_argument("--text-field", type=str, default="text", help="Name of the input text field (default: 'text')")
     parser.add_argument("--logging-dir", type=str, default="logs", help="Directory for TensorBoard logs")
     parser.add_argument("--stratify", action="store_true", help="Enable stratified split by label for eval set")
+    parser.add_argument("--batch-size", type=int, default=None, help="Override batch size (default is auto-detected)")
     args = parser.parse_args()
     import random
     torch.manual_seed(args.seed)
@@ -411,7 +412,7 @@ def main():
 
     #
     # Determine batch size from shared utility
-    base_batch_size = determine_batch_size(args.model_checkpoint, args.no_batching)
+    base_batch_size = args.batch_size or determine_batch_size(args.model_checkpoint, args.no_batching)
     logger.info(f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
     dynamic_eval_steps = calculate_dynamic_eval_steps(len(tokenized_train), base_batch_size)
     logger.info(f"📊 Eval every {dynamic_eval_steps} steps based on ~1/3 epoch heuristic.")
