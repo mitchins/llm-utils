@@ -1,6 +1,6 @@
 [project]
 name = "llm-utils"
-version = "0.3.2"
+version = "0.3.3"
 description = "Lightweight utilities for LLM data parsing and training"
 authors = [
     { name="Mitchell Currie" }
@@ -12,8 +12,14 @@ dependencies = [
     "transformers>=4.41.0",
     "scikit-learn",
     "pandas",
-    "torch",               # Or whatever you need
-    "datasets"
+    "torch",               # Or specific version
+    "datasets",
+    "numpy",
+    "tqdm",
+    "sentence-transformers",
+    "pynvml",
+    "urllib3",
+    "safetensors"
 ]
 
 [project.urls]
@@ -25,3 +31,6 @@ packages = ["llm_utils"]
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project.scripts]
+train-bert = "llm_utils.training.train_bert:main"

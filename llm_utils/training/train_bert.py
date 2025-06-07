@@ -335,211 +335,218 @@ class RegressionTrainer(Trainer):
 
         return (loss, outputs.regression_scores, labels) if return_outputs else loss
 
-model_name = args_cli.model_checkpoint.split("/")[-1]
-dataset_name = Path(args_cli.data_path).stem
-signal_strength = f"s{int(args_cli.signal_threshold)}" if args_cli.signal_threshold is not None else "sNA"
-ratio_tag = f"r{args_cli.balance_class_ratio}"
-peft_tag = f"full"
-run_name = f"{model_name}-{dataset_name}-{ratio_tag}-{signal_strength}-{peft_tag}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
-#
-# Determine batch size from shared utility
-base_batch_size = determine_batch_size(args_cli.model_checkpoint, args_cli.no_batching)
-logger.info(f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
-dynamic_eval_steps = calculate_dynamic_eval_steps(len(tokenized_train), base_batch_size)
-logger.info(f"📊 Eval every {dynamic_eval_steps} steps based on ~1/3 epoch heuristic.")
+def main():
+    model_name = args_cli.model_checkpoint.split("/")[-1]
+    dataset_name = Path(args_cli.data_path).stem
+    signal_strength = f"s{int(args_cli.signal_threshold)}" if args_cli.signal_threshold is not None else "sNA"
+    ratio_tag = f"r{args_cli.balance_class_ratio}"
+    peft_tag = f"full"
+    run_name = f"{model_name}-{dataset_name}-{ratio_tag}-{signal_strength}-{peft_tag}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
-args = TrainingArguments(
-    run_name=run_name,
-    logging_dir=f"logs/{run_name}",
-    output_dir=args_cli.output_dir,
-    per_device_train_batch_size=base_batch_size,
-    per_device_eval_batch_size=base_batch_size,
-    num_train_epochs=args_cli.total_epochs,
-    eval_strategy="steps",
-    eval_steps=dynamic_eval_steps,
-    save_strategy="steps",
-    save_steps=dynamic_eval_steps,
-    save_total_limit=999,
-    logging_steps=200,
-    report_to="tensorboard",
-    prediction_loss_only=False,
-    load_best_model_at_end=True,
-    metric_for_best_model="eval_f1",
-    greater_is_better=True,
-    warmup_steps=400,
-    max_grad_norm=1.0,
-    lr_scheduler_type="cosine",
-    fp16=True,
-    bf16=False,
-    include_for_metrics=["loss"],
-    label_names=["labels"],
-)
+    #
+    # Determine batch size from shared utility
+    base_batch_size = determine_batch_size(args_cli.model_checkpoint, args_cli.no_batching)
+    logger.info(f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
+    dynamic_eval_steps = calculate_dynamic_eval_steps(len(tokenized_train), base_batch_size)
+    logger.info(f"📊 Eval every {dynamic_eval_steps} steps based on ~1/3 epoch heuristic.")
 
-trainer_class = ClassificationTrainer if args_cli.task == "classification" else RegressionTrainer
+    args = TrainingArguments(
+        run_name=run_name,
+        logging_dir=f"logs/{run_name}",
+        output_dir=args_cli.output_dir,
+        per_device_train_batch_size=base_batch_size,
+        per_device_eval_batch_size=base_batch_size,
+        num_train_epochs=args_cli.total_epochs,
+        eval_strategy="steps",
+        eval_steps=dynamic_eval_steps,
+        save_strategy="steps",
+        save_steps=dynamic_eval_steps,
+        save_total_limit=999,
+        logging_steps=200,
+        report_to="tensorboard",
+        prediction_loss_only=False,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_f1",
+        greater_is_better=True,
+        warmup_steps=400,
+        max_grad_norm=1.0,
+        lr_scheduler_type="cosine",
+        fp16=True,
+        bf16=False,
+        include_for_metrics=["loss"],
+        label_names=["labels"],
+    )
 
-def compute_metrics(eval_preds):
-    logits = eval_preds.predictions
-    labels = eval_preds.label_ids
+    trainer_class = ClassificationTrainer if args_cli.task == "classification" else RegressionTrainer
 
-    if isinstance(logits, tuple):
-        logits = logits[0]
-    if isinstance(labels, tuple):
-        labels = labels[0]
+    def compute_metrics(eval_preds):
+        logits = eval_preds.predictions
+        labels = eval_preds.label_ids
 
-    if isinstance(logits, np.ndarray):
-        logits = torch.from_numpy(logits)
-    if isinstance(labels, np.ndarray):
-        labels = torch.from_numpy(labels).long()
+        if isinstance(logits, tuple):
+            logits = logits[0]
+        if isinstance(labels, tuple):
+            labels = labels[0]
 
-    loss_fct = torch.nn.CrossEntropyLoss()
-    loss = loss_fct(logits, labels)
+        if isinstance(logits, np.ndarray):
+            logits = torch.from_numpy(logits)
+        if isinstance(labels, np.ndarray):
+            labels = torch.from_numpy(labels).long()
 
-    preds = torch.argmax(logits, dim=1)
-    f1 = f1_score(labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
+        loss_fct = torch.nn.CrossEntropyLoss()
+        loss = loss_fct(logits, labels)
 
-    # Compute F1 per class
-    from sklearn.metrics import classification_report
-    report = classification_report(labels.cpu().numpy(), preds.cpu().numpy(), output_dict=True, zero_division=0)
-    per_class_f1 = {f"f1_{label_encoder.classes_[int(k)]}": v["f1-score"] for k, v in report.items() if k.isdigit()}
+        preds = torch.argmax(logits, dim=1)
+        f1 = f1_score(labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
 
-    # Log per-class F1 to TensorBoard under class_eval/
-    for k, v in per_class_f1.items():
-        writer.add_scalar(f"class_eval/{k}", v, trainer.state.global_step)
+        # Compute F1 per class
+        from sklearn.metrics import classification_report
+        report = classification_report(labels.cpu().numpy(), preds.cpu().numpy(), output_dict=True, zero_division=0)
+        per_class_f1 = {f"f1_{label_encoder.classes_[int(k)]}": v["f1-score"] for k, v in report.items() if k.isdigit()}
 
-    result = {"eval_loss": loss.item(), "eval_f1": f1}
-    result.update(per_class_f1)
-    return result
+        # Log per-class F1 to TensorBoard under class_eval/
+        for k, v in per_class_f1.items():
+            writer.add_scalar(f"class_eval/{k}", v, trainer.state.global_step)
 
-writer = SummaryWriter(log_dir=args.logging_dir)
+        result = {"eval_loss": loss.item(), "eval_f1": f1}
+        result.update(per_class_f1)
+        return result
 
-# --- ExtraEvalCallback definition ---
-from transformers import TrainerCallback
-from sklearn.metrics import accuracy_score, f1_score
-import torch
-class ExtraEvalCallback(TrainerCallback):
-    def __init__(self, model, dataloader, writer, name="monitor_eval"):
-        self.model = model
-        self.dataloader = dataloader
-        self.writer = writer
-        self.name = name
+    global writer  # So it can be used in compute_metrics
+    writer = SummaryWriter(log_dir=args.logging_dir)
 
-    def on_evaluate(self, args, state, control, **kwargs):
-        self.model.eval()
+    # --- ExtraEvalCallback definition ---
+    from transformers import TrainerCallback
+    from sklearn.metrics import accuracy_score, f1_score
+    import torch
+    class ExtraEvalCallback(TrainerCallback):
+        def __init__(self, model, dataloader, writer, name="monitor_eval"):
+            self.model = model
+            self.dataloader = dataloader
+            self.writer = writer
+            self.name = name
+
+        def on_evaluate(self, args, state, control, **kwargs):
+            self.model.eval()
+            all_preds, all_labels = [], []
+            for batch in self.dataloader:
+                with torch.no_grad():
+                    outputs = self.model(
+                        input_ids=batch["input_ids"].to(self.model.device),
+                        attention_mask=batch["attention_mask"].to(self.model.device),
+                    )
+                    preds = torch.argmax(outputs.logits, dim=1).cpu().numpy()
+                    labels = batch["labels"].cpu().numpy()
+                    all_preds.extend(preds)
+                    all_labels.extend(labels)
+            acc = accuracy_score(all_labels, all_preds)
+            f1 = f1_score(all_labels, all_preds, average="macro")
+            self.writer.add_scalar(f"{self.name}/accuracy", acc, state.global_step)
+            self.writer.add_scalar(f"{self.name}/f1_macro", f1, state.global_step)
+
+    trainer = trainer_class(
+        model=model,
+        args=args,
+        train_dataset=tokenized_train,
+        eval_dataset=tokenized_val,
+        data_collator=DataCollatorWithPadding(tokenizer),
+        optimizers=(torch.optim.AdamW(optimizer_grouped_parameters), None),
+        callbacks=[
+            EarlyStoppingCallback(early_stopping_patience=7),
+            EpochNormalizedLogger(writer),
+            MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=(1024 if "deberta" in model_checkpoint.lower() else 512)),
+            *([ExtraEvalCallback(model, monitor_eval_loader, writer)] if monitor_eval_loader else []),
+            ManualEarlyStopCallback(stop_file="ranker_model/stop_training.txt"),
+        ],
+        compute_metrics=compute_metrics,
+    )
+
+    logger.info(f"✅ Label class count (from encoder): {len(label_encoder.classes_)}")
+    if hasattr(model, "head") and hasattr(model.head, "classification"):
+        logger.info(f"✅ Model output classes: {model.head.classification[-1].out_features}")
+    elif hasattr(model, "classifier"):
+        logger.info(f"✅ Model output classes: {model.classifier.out_features}")
+    else:
+        model_name = getattr(model.config, "architectures", ["Unknown"])[0]
+        logger.warning(f"⚠️ Could not determine model output classes for model type: {model_name}")
+    logger.info(f"✅ Max label index in dataset: {df['tone_label'].max()}")
+
+    trainer.train()
+
+    # Reload best checkpoint to ensure we save the best model's head
+    best_path = trainer.state.best_model_checkpoint
+    logger.info(f"🌟 Reloading best model weights from: {best_path}")
+    adapter_path = os.path.join(best_path, "adapter_model.safetensors")
+    head_path = os.path.join(best_path, "ranker_head.pt")
+
+    if os.path.exists(adapter_path):
+        logger.info("🪛 Detected PEFT adapter. Skipping full model weight load.")
+        head_path = os.path.join(best_path, "ranker_head.pt")
+        assert os.path.exists(head_path), f"❌ Missing expected classifier head weights: {head_path}"
+        model.head.load_state_dict(torch.load(head_path, map_location="cpu", weights_only=True))
+        logger.info(f"🧠 Reloaded best classifier head weights from {head_path}")
+        # --- Checksum PEFT adapter after reload if debug enabled ---
+        if args_cli.debug:
+            adapter_checksum = checksum_peft(model.model_backbone)
+            logger.debug(f"🧾 Loaded PEFT adapter checksum during best model reload: {adapter_checksum}")
+    elif os.path.exists(os.path.join(best_path, "model.safetensors")):
+        logger.info("💾 Loading full model weights from model.safetensors")
+        from safetensors.torch import load_file as safe_load
+        model.load_state_dict(safe_load(os.path.join(best_path, "model.safetensors")), strict=False)
+    elif os.path.exists(os.path.join(best_path, "pytorch_model.bin")):
+        logger.info("💾 Loading full model weights from pytorch_model.bin")
+        model.load_state_dict(torch.load(os.path.join(best_path, "pytorch_model.bin"), weights_only=True), strict=False)
+    else:
+        logger.warning("⚠️ No model weight file found in checkpoint. Skipping model weight load.")
+
+    # Save final model to versioned path
+    logger.info(f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
+    root = Path("ranker_model")
+    i = 1
+    while Path(f"{root}-v{i}").exists():
+        i += 1
+    final_path = Path(f"{root}-v{i}")
+    final_path.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"💾 Saving full model to {final_path}")
+    model.save_pretrained(final_path)
+
+    tokenizer.save_pretrained(final_path)
+    with open(final_path / "tone_label_encoder.json", "w", encoding="utf-8") as f:
+        json.dump({"classes": list(label_encoder.classes_)}, f)
+
+    logger.info(f"✅ Saved final model to {final_path}")
+
+    # --- Final evaluation with best model ---
+    if monitor_eval_loader:
+        logger.info(f"📊 Final evaluation on monitoring set using best model:")
+        model.eval()
         all_preds, all_labels = [], []
-        for batch in self.dataloader:
+        for batch in monitor_eval_loader:
             with torch.no_grad():
-                outputs = self.model(
-                    input_ids=batch["input_ids"].to(self.model.device),
-                    attention_mask=batch["attention_mask"].to(self.model.device),
+                outputs = model(
+                    input_ids=batch["input_ids"].to(model.device),
+                    attention_mask=batch["attention_mask"].to(model.device),
                 )
                 preds = torch.argmax(outputs.logits, dim=1).cpu().numpy()
                 labels = batch["labels"].cpu().numpy()
                 all_preds.extend(preds)
                 all_labels.extend(labels)
+
+        from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, f1_score
+        report = classification_report(all_labels, all_preds, target_names=label_encoder.classes_, digits=2)
+        conf_matrix = confusion_matrix(all_labels, all_preds)
+        macro_f1 = f1_score(all_labels, all_preds, average="macro")
         acc = accuracy_score(all_labels, all_preds)
-        f1 = f1_score(all_labels, all_preds, average="macro")
-        self.writer.add_scalar(f"{self.name}/accuracy", acc, state.global_step)
-        self.writer.add_scalar(f"{self.name}/f1_macro", f1, state.global_step)
 
-trainer = trainer_class(
-    model=model,
-    args=args,
-    train_dataset=tokenized_train,
-    eval_dataset=tokenized_val,
-    data_collator=DataCollatorWithPadding(tokenizer),
-    optimizers=(torch.optim.AdamW(optimizer_grouped_parameters), None),
-    callbacks=[
-        EarlyStoppingCallback(early_stopping_patience=7),
-        EpochNormalizedLogger(writer),
-        MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=(1024 if "deberta" in model_checkpoint.lower() else 512)),
-        *([ExtraEvalCallback(model, monitor_eval_loader, writer)] if monitor_eval_loader else []),
-        ManualEarlyStopCallback(stop_file="ranker_model/stop_training.txt"),
-    ],
-    compute_metrics=compute_metrics,
-)
-
-logger.info(f"✅ Label class count (from encoder): {len(label_encoder.classes_)}")
-if hasattr(model, "head") and hasattr(model.head, "classification"):
-    logger.info(f"✅ Model output classes: {model.head.classification[-1].out_features}")
-elif hasattr(model, "classifier"):
-    logger.info(f"✅ Model output classes: {model.classifier.out_features}")
-else:
-    model_name = getattr(model.config, "architectures", ["Unknown"])[0]
-    logger.warning(f"⚠️ Could not determine model output classes for model type: {model_name}")
-logger.info(f"✅ Max label index in dataset: {df['tone_label'].max()}")
-
-trainer.train()
-
-# Reload best checkpoint to ensure we save the best model's head
-best_path = trainer.state.best_model_checkpoint
-logger.info(f"🌟 Reloading best model weights from: {best_path}")
-adapter_path = os.path.join(best_path, "adapter_model.safetensors")
-head_path = os.path.join(best_path, "ranker_head.pt")
-
-if os.path.exists(adapter_path):
-    logger.info("🪛 Detected PEFT adapter. Skipping full model weight load.")
-    head_path = os.path.join(best_path, "ranker_head.pt")
-    assert os.path.exists(head_path), f"❌ Missing expected classifier head weights: {head_path}"
-    model.head.load_state_dict(torch.load(head_path, map_location="cpu", weights_only=True))
-    logger.info(f"🧠 Reloaded best classifier head weights from {head_path}")
-    # --- Checksum PEFT adapter after reload if debug enabled ---
-    if args_cli.debug:
-        adapter_checksum = checksum_peft(model.model_backbone)
-        logger.debug(f"🧾 Loaded PEFT adapter checksum during best model reload: {adapter_checksum}")
-elif os.path.exists(os.path.join(best_path, "model.safetensors")):
-    logger.info("💾 Loading full model weights from model.safetensors")
-    from safetensors.torch import load_file as safe_load
-    model.load_state_dict(safe_load(os.path.join(best_path, "model.safetensors")), strict=False)
-elif os.path.exists(os.path.join(best_path, "pytorch_model.bin")):
-    logger.info("💾 Loading full model weights from pytorch_model.bin")
-    model.load_state_dict(torch.load(os.path.join(best_path, "pytorch_model.bin"), weights_only=True), strict=False)
-else:
-    logger.warning("⚠️ No model weight file found in checkpoint. Skipping model weight load.")
-
-# Save final model to versioned path
-logger.info(f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
-root = Path("ranker_model")
-i = 1
-while Path(f"{root}-v{i}").exists():
-    i += 1
-final_path = Path(f"{root}-v{i}")
-final_path.mkdir(parents=True, exist_ok=True)
-
-logger.info(f"💾 Saving full model to {final_path}")
-model.save_pretrained(final_path)
-
-tokenizer.save_pretrained(final_path)
-with open(final_path / "tone_label_encoder.json", "w", encoding="utf-8") as f:
-    json.dump({"classes": list(label_encoder.classes_)}, f)
+        print("\n🎯 Final Monitoring Set Metrics")
+        print(f"Accuracy: {acc:.4f}")
+        print(f"Macro F1 : {macro_f1:.4f}")
+        print("\nPer-Class Report:\n" + report)
+        print("Confusion Matrix:\n", conf_matrix)
 
 
-logger.info(f"✅ Saved final model to {final_path}")
-
-# --- Final evaluation with best model ---
-if monitor_eval_loader:
-    logger.info(f"📊 Final evaluation on monitoring set using best model:")
-    model.eval()
-    all_preds, all_labels = [], []
-    for batch in monitor_eval_loader:
-        with torch.no_grad():
-            outputs = model(
-                input_ids=batch["input_ids"].to(model.device),
-                attention_mask=batch["attention_mask"].to(model.device),
-            )
-            preds = torch.argmax(outputs.logits, dim=1).cpu().numpy()
-            labels = batch["labels"].cpu().numpy()
-            all_preds.extend(preds)
-            all_labels.extend(labels)
-
-    from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, f1_score
-    report = classification_report(all_labels, all_preds, target_names=label_encoder.classes_, digits=2)
-    conf_matrix = confusion_matrix(all_labels, all_preds)
-    macro_f1 = f1_score(all_labels, all_preds, average="macro")
-    acc = accuracy_score(all_labels, all_preds)
-
-    print("\n🎯 Final Monitoring Set Metrics")
-    print(f"Accuracy: {acc:.4f}")
-    print(f"Macro F1 : {macro_f1:.4f}")
-    print("\nPer-Class Report:\n" + report)
-    print("Confusion Matrix:\n", conf_matrix)
+# Allow running as a script
+if __name__ == "__main__":
+    main()
