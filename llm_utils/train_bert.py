@@ -1,6 +1,8 @@
 import json
 import argparse
 from pathlib import Path
+import sys
+sys.path.append(str(Path(__file__).resolve().parent))
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from datasets import Dataset
@@ -17,13 +19,8 @@ import shutil
 from transformers import TrainerCallback
 from transformers import EarlyStoppingCallback
 from torch.utils.tensorboard import SummaryWriter
-from training.base_trainer import EpochNormalizedLogger, MemoryUsageLogger, calculate_dynamic_eval_steps, ManualEarlyStopCallback
-from transformers import AutoModelForSequenceClassification
-from training.tone_training import (
-    load_and_filter_dataframe,
-    calculate_eval_size,
-    determine_batch_size,
-)
+from training import EpochNormalizedLogger, MemoryUsageLogger, calculate_dynamic_eval_steps, ManualEarlyStopCallback
+from training import load_and_filter_dataframe, calculate_eval_size, determine_batch_size
 import warnings
 from transformers import logging as hf_logging
 import copy
