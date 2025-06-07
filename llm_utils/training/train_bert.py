@@ -543,7 +543,7 @@ def main():
 
     tokenizer.save_pretrained(final_path)
     with open(final_path / f"{args.label_field}_label_encoder.json", "w", encoding="utf-8") as f:
-        json.dump({"classes": list(label_encoder.classes_)}, f)
+        json.dump({"classes": [int(x) if isinstance(x, (np.integer,)) else x for x in label_encoder.classes_]}, f)
 
     logger.info(f"✅ Saved final model to {final_path}")
 
