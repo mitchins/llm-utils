@@ -153,6 +153,7 @@ class RegressionTrainer(Trainer):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--no-batching", action="store_true", help="Disable batching to reduce VRAM usage")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
     parser.add_argument("--output-dir", type=str, default="bert_model", help="Output directory for model and encoder")
@@ -179,7 +180,14 @@ def main():
     # New argument for text field
     parser.add_argument("--text-field", type=str, default="text", help="Name of the input text field (default: 'text')")
     parser.add_argument("--logging-dir", type=str, default="logs", help="Directory for TensorBoard logs")
+    parser.add_argument("--stratify", action="store_true", help="Enable stratified split by label for eval set")
     args = parser.parse_args()
+    import random
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
     data_path = Path(args.data_path)
     if not data_path.exists():
         parser.error(f"❌ Provided data path does not exist: {data_path}")
@@ -296,12 +304,31 @@ def main():
         train_df = df.iloc[train_indices].reset_index(drop=True)
         eval_df = df.iloc[eval_indices].reset_index(drop=True)
         logger.info(f"📊 Using 1-in-10 slicing for eval split (balanced set).")
+    elif args.stratify:
+        from sklearn.model_selection import train_test_split
+        if df[args.label_field].nunique() > 1 and all(df[args.label_field].value_counts() >= 2):
+            train_df, eval_df = train_test_split(
+                df,
+                test_size=0.1,
+                stratify=df[args.label_field],
+                random_state=args.seed,
+            )
+            train_df = train_df.reset_index(drop=True)
+            eval_df = eval_df.reset_index(drop=True)
+            logger.info("📊 Using stratified split for eval set.")
+        else:
+            logger.warning("⚠️ Stratified split requested but not enough samples per class. Falling back to random split.")
+            dataset = Dataset.from_pandas(df)
+            split = dataset.train_test_split(test_size=0.1, seed=args.seed)
+            train_df = split["train"].to_pandas()
+            eval_df = split["test"].to_pandas()
+            logger.info("📊 Using HuggingFace random split for eval set (fallback).")
     else:
         dataset = Dataset.from_pandas(df)
-        split = dataset.train_test_split(test_size=0.1, seed=42)
+        split = dataset.train_test_split(test_size=0.1, seed=args.seed)
         train_df = split["train"].to_pandas()
         eval_df = split["test"].to_pandas()
-        logger.info(f"📊 Using HuggingFace random split for eval set (unbalanced set).")
+        logger.info("📊 Using HuggingFace random split for eval set (unbalanced set).")
 
     # --- Save eval dataset to JSONL ---
     eval_jsonl_path = output_dir / "last_eval_set.jsonl"
@@ -540,7 +567,6 @@ def main():
 
     logger.info(f"💾 Saving full model to {final_path}")
     model.save_pretrained(final_path)
-
     tokenizer.save_pretrained(final_path)
     with open(final_path / f"{args.label_field}_label_encoder.json", "w", encoding="utf-8") as f:
         json.dump({"classes": [int(x) if isinstance(x, (np.integer,)) else x for x in label_encoder.classes_]}, f)
