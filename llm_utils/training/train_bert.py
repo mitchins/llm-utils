@@ -155,7 +155,6 @@ def main():
     parser.add_argument("--total-epochs", type=int, default=15, help="Total number of training epochs (default: 15)")
     parser.add_argument("--task", choices=["classification", "regression"], default="classification", help="Specify which head to train")
     parser.add_argument("--model-checkpoint", type=str, default="microsoft/deberta-v3-base", help="HuggingFace model checkpoint to use")
-    parser.add_argument("--signal-threshold", type=float, default=None, help="Minimum score for at least one of vividness/emotion/action to retain sample")
     parser.add_argument("--data-path", type=str, default="training_data.jsonl", help="Path to training data JSONL file")
     parser.add_argument("--balance-class-ratio", type=float, default=None,
                         help="Balance tone classes such that no class exceeds the smallest by more than this ratio (e.g., 1.0 = equal)")
@@ -187,7 +186,7 @@ def main():
 
     # data_path = Path(args.data_path)  # Removed: now assigned above
     if data_path.suffix == ".jsonl":
-        df = load_and_filter_dataframe(data_path=data_path, signal_threshold=args.signal_threshold, label_field=args.label_field)
+        df = load_and_filter_dataframe(data_path=data_path, label_field=args.label_field)
     elif data_path.suffix == ".csv":
         df = pd.read_csv(data_path)
     elif data_path.suffix == ".tsv":
@@ -292,7 +291,7 @@ def main():
         logger.info(f"🧪 Loading holdout monitoring set: {args.evaluation_path}")
         eval_path = Path(args.evaluation_path)
         if eval_path.suffix == ".jsonl":
-            holdout_df = load_and_filter_dataframe(data_path=eval_path, signal_threshold=args.signal_threshold, label_field=args.label_field)
+            holdout_df = load_and_filter_dataframe(data_path=eval_path, label_field=args.label_field)
         elif eval_path.suffix == ".csv":
             holdout_df = pd.read_csv(eval_path)
         elif eval_path.suffix == ".tsv":
@@ -344,9 +343,8 @@ def main():
     optimizer_grouped_parameters = [{"params": model.parameters(), "lr": base_lr}]
     model_name = args.model_checkpoint.split("/")[-1]
     dataset_name = Path(args.data_path).stem
-    signal_strength = f"s{int(args.signal_threshold)}" if args.signal_threshold is not None else "sNA"
     ratio_tag = f"r{args.balance_class_ratio}"
-    run_name = f"{model_name}-{dataset_name}-{ratio_tag}-{signal_strength}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    run_name = f"{model_name}-{dataset_name}-{ratio_tag}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
     #
     # Determine batch size from shared utility
