@@ -146,8 +146,8 @@ def main():
         df["length_bin"] = pd.qcut(df[args_cli.target_col].map(strat_length), q=5, duplicates="drop")
         val_df = df.groupby("length_bin", group_keys=False).apply(lambda g: g.sample(frac=args_cli.validation_size))
         train_df = df.drop(val_df.index)
-        train_dataset = Dataset.from_pandas(train_df)
-        val_dataset = Dataset.from_pandas(val_df)
+        train_dataset = Dataset.from_pandas(train_df.drop(columns=["length_bin"]))
+        val_dataset = Dataset.from_pandas(val_df.drop(columns=["length_bin"]))
     else:
         dataset = Dataset.from_pandas(df)
         total_examples = len(dataset)
