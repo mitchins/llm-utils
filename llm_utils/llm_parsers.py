@@ -11,8 +11,8 @@ def process_llm_response(response, console=None):
 
     for line in lines:
         cleaned = re.sub(r"^(?:\*\*+)?\s*Answer\s*[:：]\s*", "", line.strip(), flags=re.IGNORECASE).strip()
-        token = cleaned.replace(' ', '')
-        match = re.match(r"^\s*[\[*'\"#]*([YN])[\]*'\"#]*\s*[.!]?$", token, re.IGNORECASE)
+        token = re.sub(r'\s+', '', cleaned.lower())
+        match = re.match(r"^[\[*'\"#(]*([yn])[\]*'\"#).:]*", token)
         if match:
             answer = match.group(1).strip().lower()
             if answer in ["y", "yes"]:
