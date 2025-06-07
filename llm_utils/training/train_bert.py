@@ -10,7 +10,6 @@ from transformers import DataCollatorWithPadding
 import torch
 from torch.nn.functional import softmax
 import numpy as np
-from sklearn.metrics import f1_score
 import logging
 logger = logging.getLogger(__name__)
 import os
@@ -447,6 +446,7 @@ def main():
     trainer_class = ClassificationTrainer if args.task == "classification" else RegressionTrainer
 
     def compute_metrics(eval_preds):
+        from sklearn.metrics import f1_score, classification_report
         logits = eval_preds.predictions
         labels = eval_preds.label_ids
 
@@ -467,7 +467,6 @@ def main():
         f1 = f1_score(labels.cpu().numpy(), preds.cpu().numpy(), average="macro")
 
         # Compute F1 per class
-        from sklearn.metrics import classification_report
         report = classification_report(labels.cpu().numpy(), preds.cpu().numpy(), output_dict=True, zero_division=0)
         per_class_f1 = {
             f"f1_{label_encoder.classes_[int(k)]}": v["f1-score"]
