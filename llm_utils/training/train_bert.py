@@ -43,6 +43,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 grad_log = []
 
+
 # Classification Trainer
 class ClassificationTrainer(Trainer):
     def __init__(self, *args, args_cli=None, label_encoder=None, **kwargs):
@@ -93,10 +94,11 @@ class ClassificationTrainer(Trainer):
 
         # Apply penalties for a specific class if configured and no other loss mods active
         if (not self.args_cli.use_focal_loss and not self.args_cli.focus_weak_classes
-            and 'penalize_class_index' in globals() and penalize_class_index is not None):
+            and getattr(self.args_cli, "penalize_class_index", None) is not None):
             preds = torch.argmax(logits, dim=1)
-            penalty_mask = (labels == penalize_class_index) | (preds == penalize_class_index)
-            fn_mask = (labels == penalize_class_index) & (preds != penalize_class_index)
+            class_idx = self.args_cli.penalize_class_index
+            penalty_mask = (labels == class_idx) | (preds == class_idx)
+            fn_mask = (labels == class_idx) & (preds != class_idx)
 
             weights = torch.ones_like(loss)
             fn_weights = torch.where(fn_mask, torch.tensor(3.0, device=weights.device), weights)
@@ -105,7 +107,7 @@ class ClassificationTrainer(Trainer):
             weighted_loss = (loss * weights).mean()
 
             # Additional penalties for entropy and softmax margin if class matches
-            mask = labels == penalize_class_index
+            mask = labels == class_idx
             probs = softmax(logits, dim=1)
             if mask.any():
                 selected_probs = probs[mask]
@@ -280,6 +282,7 @@ def main():
             raise ValueError(f"❌ Specified --penalize-class '{args.penalize_class}' not in known classes: {list(label_encoder.classes_)}")
         penalize_class_index = list(label_encoder.classes_).index(args.penalize_class)
         logger.info(f"⚖️ Will apply special loss handling to class: {args.penalize_class} (index {penalize_class_index})")
+    args.penalize_class_index = penalize_class_index
 
     with open(encoder_path, "w", encoding="utf-8") as f:
         json.dump({"classes": [int(x) if isinstance(x, (np.integer,)) else x for x in label_encoder.classes_]}, f)
