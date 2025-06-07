@@ -439,7 +439,11 @@ def main():
         # Compute F1 per class
         from sklearn.metrics import classification_report
         report = classification_report(labels.cpu().numpy(), preds.cpu().numpy(), output_dict=True, zero_division=0)
-        per_class_f1 = {f"f1_{label_encoder.classes_[int(k)]}": v["f1-score"] for k, v in report.items() if k.isdigit()}
+        per_class_f1 = {
+            f"f1_{label_encoder.classes_[int(k)]}": v["f1-score"]
+            for k, v in report.items()
+            if k.isdigit() and int(k) < len(label_encoder.classes_)
+        }
 
         # Log per-class F1 to TensorBoard under class_eval/
         for k, v in per_class_f1.items():
