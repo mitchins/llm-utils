@@ -187,7 +187,7 @@ def main():
 
     # data_path = Path(args.data_path)  # Removed: now assigned above
     if data_path.suffix == ".jsonl":
-        df = load_and_filter_dataframe(data_path, args.signal_threshold, tone_field=args.label_field)
+        df = load_and_filter_dataframe(data_path, args.signal_threshold, label_field=args.label_field)
     elif data_path.suffix == ".csv":
         df = pd.read_csv(data_path)
     elif data_path.suffix == ".tsv":
@@ -292,7 +292,7 @@ def main():
         logger.info(f"🧪 Loading holdout monitoring set: {args.evaluation_path}")
         eval_path = Path(args.evaluation_path)
         if eval_path.suffix == ".jsonl":
-            holdout_df = load_and_filter_dataframe(eval_path, args.signal_threshold, tone_field=args.label_field)
+            holdout_df = load_and_filter_dataframe(eval_path, args.signal_threshold, label_field=args.label_field)
         elif eval_path.suffix == ".csv":
             holdout_df = pd.read_csv(eval_path)
         elif eval_path.suffix == ".tsv":
