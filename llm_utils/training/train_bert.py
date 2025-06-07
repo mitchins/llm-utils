@@ -399,7 +399,7 @@ def main():
         tokenized_val.set_format(type="torch", columns=["input_ids", "attention_mask", "regression_labels", label_column_internal])
 
     from transformers import AutoConfig, AutoModelForSequenceClassification
-    config = AutoConfig.from_pretrained(model_checkpoint, num_labels=6)
+    config = AutoConfig.from_pretrained(model_checkpoint, num_labels=len(label_list))
     model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, config=config)
 
     base_lr = 5e-5

@@ -1,36 +1,38 @@
-
-
 import argparse
 import json
 import os
 import torch
+import numpy as np
 from transformers import BertTokenizer, BertForSequenceClassification
 from sklearn.preprocessing import LabelEncoder
 from datasets import load_dataset
 from sklearn.metrics import classification_report
 from tqdm import tqdm
+import torch.nn.functional as F
 
 def load_label_encoder(path):
     with open(path, "r") as f:
         data = json.load(f)
     encoder = LabelEncoder()
-    encoder.classes_ = data["classes"]
+    encoder.classes_ = np.array(data["classes"])
     return encoder
 
 def predict_single(text, model, tokenizer, label_encoder, device):
     inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True).to(device)
     outputs = model(**inputs)
     logits = outputs.logits
+    probs = F.softmax(logits, dim=1).detach().cpu().numpy()[0]
     prediction = torch.argmax(logits, dim=1).item()
-    return label_encoder.inverse_transform([prediction])[0]
+    label = label_encoder.inverse_transform([prediction])[0]
+    return label, probs
 
 def run_repl(model, tokenizer, label_encoder, device):
     print("📥 Interactive REPL mode. Type input to classify. Ctrl+C to exit.")
     while True:
         try:
             text = input(">>> ")
-            pred = predict_single(text, model, tokenizer, label_encoder, device)
-            print(f"🔎 Predicted Label: {pred}")
+            pred, probs = predict_single(text, model, tokenizer, label_encoder, device)
+            print(f"🔎 Predicted Label: {pred} — Softmax: {np.round(probs, 3)}")
         except KeyboardInterrupt:
             print("\n👋 Exiting REPL.")
             break
