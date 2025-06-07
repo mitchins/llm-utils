@@ -1,5 +1,6 @@
 import json
 import argparse
+import sys
 from pathlib import Path
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
@@ -40,197 +41,6 @@ logging.getLogger("filelock").setLevel(logging.WARNING)
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 grad_log = []
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--no-batching", action="store_true", help="Disable batching to reduce VRAM usage")
-parser.add_argument("--debug", action="store_true", help="Enable debug output")
-parser.add_argument("--output-dir", type=str, default="ranker_model", help="Output directory for model and encoder")
-parser.add_argument("--clean", action="store_true", help="Remove output_dir before training if it exists")
-parser.add_argument("--total-epochs", type=int, default=15, help="Total number of training epochs (default: 15)")
-parser.add_argument("--task", choices=["classification", "regression"], default="classification", help="Specify which head to train")
-parser.add_argument("--model-checkpoint", type=str, default="microsoft/deberta-v3-base", help="HuggingFace model checkpoint to use")
-parser.add_argument("--signal-threshold", type=float, default=None, help="Minimum score for at least one of vividness/emotion/action to retain sample")
-parser.add_argument("--data-path", type=str, default="training_data.jsonl", help="Path to training data JSONL file")
-parser.add_argument("--balance-class-ratio", type=float, default=None,
-                    help="Balance tone classes such that no class exceeds the smallest by more than this ratio (e.g., 1.0 = equal)")
-parser.add_argument("--focus-weak-classes", action="store_true", help="Dynamically increase reward for underperforming classes and reduce focus on overperformers")
-parser.add_argument("--use-focal-loss", action="store_true", help="Apply focal loss instead of standard cross-entropy")
-# New arguments:
-# New evaluation-path argument
-parser.add_argument("--evaluation-path", type=str, default=None, help="Optional evaluation dataset path for post-training scoring")
-# New argument to penalize a specific class
-parser.add_argument("--penalize-class", type=str, default=None,
-    help="Class label (e.g. 'Neutral') to apply extra penalties during loss computation.")
-# New argument for label field
-parser.add_argument("--label-field", type=str, default="tone", help="Name of the label column in the input dataset (default: 'tone')")
-# New argument for label list
-parser.add_argument("--label-list", type=str, default=None,
-                    help="Optional comma-separated list of labels to clamp to. If not provided, all seen labels are used.")
-args_cli = parser.parse_args()
-if args_cli.use_focal_loss and args_cli.focus_weak_classes:
-    raise ValueError("❌ --use-focal-loss and --focus-weak-classes cannot be enabled at the same time. Please choose only one.")
-
-logging.basicConfig(level=logging.DEBUG if args_cli.debug else logging.INFO)
-logger = logging.getLogger(__name__)
-
-data_path = Path(args_cli.data_path)
-if data_path.suffix == ".jsonl":
-    df = load_and_filter_dataframe(data_path, args_cli.signal_threshold, tone_field=args_cli.label_field)
-elif data_path.suffix == ".csv":
-    df = pd.read_csv(data_path)
-elif data_path.suffix == ".tsv":
-    df = pd.read_csv(data_path, sep="\t")
-else:
-    raise ValueError(f"Unsupported file type: {data_path.suffix}")
-
-# --- Label list logic ---
-if args_cli.label_list:
-    label_list = [lbl.strip() for lbl in args_cli.label_list.split(",")]
-    logger.info(f"🔖 Using label list from --label-list: {label_list}")
-else:
-    label_list = sorted(df[args_cli.label_field].unique())
-    logger.info(f"🔖 No --label-list provided, using all seen labels: {label_list}")
-
-# Balance classes using top-ranked entries if requested and task is classification
-if args_cli.balance_class_ratio and args_cli.task == "classification":
-    if {"vividness", "emotion", "action"}.issubset(df.columns):
-        df["combined_score"] = df["vividness"] + df["emotion"] + df["action"]
-    top_by_class = []
-    min_count = df[df[args_cli.label_field].isin(label_list)][args_cli.label_field].value_counts().min()
-    max_allowed = int(min_count * args_cli.balance_class_ratio)
-    for tone in label_list:
-        class_rows = df[df[args_cli.label_field] == tone]
-        if "combined_score" in class_rows:
-            class_rows = class_rows.sort_values(by="combined_score", ascending=False)
-        top_class = class_rows.head(max_allowed)
-        top_by_class.append(top_class)
-    df = pd.concat(top_by_class).reset_index(drop=True)
-    # Insert per-class count logging
-    final_counts = df[args_cli.label_field].value_counts().to_dict()
-    logger.info(f"🎯 Balanced dataset using ratio {args_cli.balance_class_ratio:.2f}:")
-    logger.info(f"   Minimum class size = {min_count}")
-    logger.info(f"   Class caps enforced at {max_allowed} per label")
-    logger.info(f"   Final label distribution:")
-    for tone in label_list:
-        logger.info(f"     {tone:<12}: {final_counts.get(tone, 0)}")
-    logger.info(f"   Total training samples: {len(df)}")
-
-# Encode labels as classification label
-output_dir = Path(args_cli.output_dir)
-if args_cli.clean and output_dir.exists():
-    logger.info(f"🧹 Removing existing model output: {output_dir}")
-    shutil.rmtree(output_dir)
-output_dir.mkdir(parents=True, exist_ok=True)
-encoder_path = output_dir / "tone_label_encoder.json"
-
-label_encoder = LabelEncoder()
-df = df[df[args_cli.label_field].isin(label_list)].reset_index(drop=True)
-label_encoder.fit(label_list)
-df["tone_label"] = label_encoder.transform(df[args_cli.label_field])
-
-# --- Penalize class logic ---
-penalize_class_index = None
-if args_cli.penalize_class:
-    if args_cli.penalize_class not in label_encoder.classes_:
-        raise ValueError(f"❌ Specified --penalize-class '{args_cli.penalize_class}' not in known classes: {list(label_encoder.classes_)}")
-    penalize_class_index = list(label_encoder.classes_).index(args_cli.penalize_class)
-    logger.info(f"⚖️ Will apply special loss handling to class: {args_cli.penalize_class} (index {penalize_class_index})")
-
-with open(encoder_path, "w", encoding="utf-8") as f:
-    json.dump({"classes": list(label_encoder.classes_)}, f)
-
-min_label, max_label = df["tone_label"].min(), df["tone_label"].max()
-assert min_label >= 0, f"Tone label below 0: {min_label}"
-assert max_label < len(label_encoder.classes_), f"Tone label above expected range: {max_label}"
-
-# Conditional split logic for train/eval
-if args_cli.balance_class_ratio:
-    df = df.sample(frac=1, random_state=42).reset_index(drop=True)  # shuffle once
-    eval_indices = list(range(0, len(df), 10))
-    train_indices = [i for i in range(len(df)) if i not in eval_indices]
-    train_df = df.iloc[train_indices].reset_index(drop=True)
-    eval_df = df.iloc[eval_indices].reset_index(drop=True)
-    logger.info(f"📊 Using 1-in-10 slicing for eval split (balanced set).")
-else:
-    dataset = Dataset.from_pandas(df)
-    split = dataset.train_test_split(test_size=0.1, seed=42)
-    train_df = split["train"].to_pandas()
-    eval_df = split["test"].to_pandas()
-    logger.info(f"📊 Using HuggingFace random split for eval set (unbalanced set).")
-
-# --- Save eval dataset to JSONL ---
-eval_jsonl_path = output_dir / "last_eval_set.jsonl"
-eval_df.to_json(eval_jsonl_path, orient="records", lines=True, force_ascii=False)
-logger.info(f"📝 Saved eval dataset used during training to: {eval_jsonl_path}")
-
-train_dataset = Dataset.from_pandas(train_df)
-val_dataset = Dataset.from_pandas(eval_df)
-
-# Tokenizer
-model_checkpoint = args_cli.model_checkpoint
-tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-
-def tokenize_fn(example):
-    max_length = 1024 if "deberta" in model_checkpoint.lower() else 512
-    return tokenizer(example["text"], truncation=True, max_length=max_length)
-
-# --- Optional holdout evaluation set ---
-monitor_eval_loader = None
-if args_cli.evaluation_path:
-    logger.info(f"🧪 Loading holdout monitoring set: {args_cli.evaluation_path}")
-    eval_path = Path(args_cli.evaluation_path)
-    if eval_path.suffix == ".jsonl":
-        holdout_df = load_and_filter_dataframe(eval_path, args_cli.signal_threshold, tone_field=args_cli.label_field)
-    elif eval_path.suffix == ".csv":
-        holdout_df = pd.read_csv(eval_path)
-    elif eval_path.suffix == ".tsv":
-        holdout_df = pd.read_csv(eval_path, sep="\t")
-    else:
-        raise ValueError(f"Unsupported evaluation file type: {eval_path.suffix}")
-    holdout_df = holdout_df[holdout_df[args_cli.label_field].isin(label_list)].reset_index(drop=True)
-    holdout_df["tone_label"] = label_encoder.transform(holdout_df[args_cli.label_field])
-    holdout_dataset = Dataset.from_pandas(holdout_df)
-    tokenized_holdout = holdout_dataset.map(tokenize_fn, batched=True)
-    tokenized_holdout = tokenized_holdout.rename_column("tone_label", "labels")
-    tokenized_holdout.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-    from torch.utils.data import DataLoader
-    monitor_eval_loader = DataLoader(tokenized_holdout, batch_size=32, collate_fn=DataCollatorWithPadding(tokenizer))
-
-# Tokenize both splits
-tokenized_train = train_dataset.map(tokenize_fn, batched=True)
-tokenized_val = val_dataset.map(tokenize_fn, batched=True)
-
-# Format dataset
-def format_labels(example):
-    example["labels"] = [example["vividness"], example["emotion"], example["action"], example["tightness"]]
-    example["tone_label"] = int(example["tone_label"])
-    example["tone_label"] = np.int64(example["tone_label"])
-    return example
-
-if args_cli.task == "classification":
-    tokenized_train = tokenized_train.rename_column("tone_label", "labels")
-    tokenized_train.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-    tokenized_train = tokenized_train.shuffle(seed=42)
-
-    tokenized_val = tokenized_val.rename_column("tone_label", "labels")
-    tokenized_val.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-else:
-    tokenized_train = tokenized_train.map(format_labels)
-    tokenized_train = tokenized_train.rename_column("labels", "regression_labels")
-    tokenized_train.set_format(type="torch", columns=["input_ids", "attention_mask", "regression_labels", "tone_label"])
-    tokenized_train = tokenized_train.shuffle(seed=42)
-    tokenized_val = tokenized_val.map(format_labels)
-    tokenized_val = tokenized_val.rename_column("labels", "regression_labels")
-    tokenized_val.set_format(type="torch", columns=["input_ids", "attention_mask", "regression_labels", "tone_label"])
-
-from transformers import AutoConfig, AutoModelForSequenceClassification
-config = AutoConfig.from_pretrained(model_checkpoint, num_labels=6)
-model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, config=config)
-
-
-base_lr = 5e-5
-# Setup parameter groups
-optimizer_grouped_parameters = [{"params": model.parameters(), "lr": base_lr}]
 
 # Classification Trainer
 class ClassificationTrainer(Trainer):
@@ -337,27 +147,221 @@ class RegressionTrainer(Trainer):
 
 
 def main():
-    model_name = args_cli.model_checkpoint.split("/")[-1]
-    dataset_name = Path(args_cli.data_path).stem
-    signal_strength = f"s{int(args_cli.signal_threshold)}" if args_cli.signal_threshold is not None else "sNA"
-    ratio_tag = f"r{args_cli.balance_class_ratio}"
-    peft_tag = f"full"
-    run_name = f"{model_name}-{dataset_name}-{ratio_tag}-{signal_strength}-{peft_tag}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-batching", action="store_true", help="Disable batching to reduce VRAM usage")
+    parser.add_argument("--debug", action="store_true", help="Enable debug output")
+    parser.add_argument("--output-dir", type=str, default="ranker_model", help="Output directory for model and encoder")
+    parser.add_argument("--clean", action="store_true", help="Remove output_dir before training if it exists")
+    parser.add_argument("--total-epochs", type=int, default=15, help="Total number of training epochs (default: 15)")
+    parser.add_argument("--task", choices=["classification", "regression"], default="classification", help="Specify which head to train")
+    parser.add_argument("--model-checkpoint", type=str, default="microsoft/deberta-v3-base", help="HuggingFace model checkpoint to use")
+    parser.add_argument("--signal-threshold", type=float, default=None, help="Minimum score for at least one of vividness/emotion/action to retain sample")
+    parser.add_argument("--data-path", type=str, default="training_data.jsonl", help="Path to training data JSONL file")
+    parser.add_argument("--balance-class-ratio", type=float, default=None,
+                        help="Balance tone classes such that no class exceeds the smallest by more than this ratio (e.g., 1.0 = equal)")
+    parser.add_argument("--focus-weak-classes", action="store_true", help="Dynamically increase reward for underperforming classes and reduce focus on overperformers")
+    parser.add_argument("--use-focal-loss", action="store_true", help="Apply focal loss instead of standard cross-entropy")
+    # New arguments:
+    # New evaluation-path argument
+    parser.add_argument("--evaluation-path", type=str, default=None, help="Optional evaluation dataset path for post-training scoring")
+    # New argument to penalize a specific class
+    parser.add_argument("--penalize-class", type=str, default=None,
+        help="Class label (e.g. 'Neutral') to apply extra penalties during loss computation.")
+    # New argument for label field
+    parser.add_argument("--label-field", type=str, default="tone", help="Name of the label column in the input dataset (default: 'tone')")
+    # New argument for label list
+    parser.add_argument("--label-list", type=str, default=None,
+                        help="Optional comma-separated list of labels to clamp to. If not provided, all seen labels are used.")
+    args = parser.parse_args()
+    data_path = Path(args.data_path)
+    if not data_path.exists():
+        parser.error(f"❌ Provided data path does not exist: {data_path}")
+    if len(sys.argv) == 1:
+        parser.print_help()
+        exit(0)
+    if args.use_focal_loss and args.focus_weak_classes:
+        raise ValueError("❌ --use-focal-loss and --focus-weak-classes cannot be enabled at the same time. Please choose only one.")
+
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
+    logger = logging.getLogger(__name__)
+
+    # data_path = Path(args.data_path)  # Removed: now assigned above
+    if data_path.suffix == ".jsonl":
+        df = load_and_filter_dataframe(data_path, args.signal_threshold, tone_field=args.label_field)
+    elif data_path.suffix == ".csv":
+        df = pd.read_csv(data_path)
+    elif data_path.suffix == ".tsv":
+        df = pd.read_csv(data_path, sep="\t")
+    else:
+        raise ValueError(f"Unsupported file type: {data_path.suffix}")
+
+    # --- Label list logic ---
+    if args.label_list:
+        label_list = [lbl.strip() for lbl in args.label_list.split(",")]
+        logger.info(f"🔖 Using label list from --label-list: {label_list}")
+    else:
+        label_list = sorted(df[args.label_field].unique())
+        logger.info(f"🔖 No --label-list provided, using all seen labels: {label_list}")
+
+    # Balance classes using top-ranked entries if requested and task is classification
+    if args.balance_class_ratio and args.task == "classification":
+        if {"vividness", "emotion", "action"}.issubset(df.columns):
+            df["combined_score"] = df["vividness"] + df["emotion"] + df["action"]
+        top_by_class = []
+        min_count = df[df[args.label_field].isin(label_list)][args.label_field].value_counts().min()
+        max_allowed = int(min_count * args.balance_class_ratio)
+        for tone in label_list:
+            class_rows = df[df[args.label_field] == tone]
+            if "combined_score" in class_rows:
+                class_rows = class_rows.sort_values(by="combined_score", ascending=False)
+            top_class = class_rows.head(max_allowed)
+            top_by_class.append(top_class)
+        df = pd.concat(top_by_class).reset_index(drop=True)
+        # Insert per-class count logging
+        final_counts = df[args.label_field].value_counts().to_dict()
+        logger.info(f"🎯 Balanced dataset using ratio {args.balance_class_ratio:.2f}:")
+        logger.info(f"   Minimum class size = {min_count}")
+        logger.info(f"   Class caps enforced at {max_allowed} per label")
+        logger.info(f"   Final label distribution:")
+        for tone in label_list:
+            logger.info(f"     {tone:<12}: {final_counts.get(tone, 0)}")
+        logger.info(f"   Total training samples: {len(df)}")
+
+    # Encode labels as classification label
+    output_dir = Path(args.output_dir)
+    if args.clean and output_dir.exists():
+        logger.info(f"🧹 Removing existing model output: {output_dir}")
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    encoder_path = output_dir / "tone_label_encoder.json"
+
+    label_encoder = LabelEncoder()
+    df = df[df[args.label_field].isin(label_list)].reset_index(drop=True)
+    label_encoder.fit(label_list)
+    df["tone_label"] = label_encoder.transform(df[args.label_field])
+
+    # --- Penalize class logic ---
+    penalize_class_index = None
+    if args.penalize_class:
+        if args.penalize_class not in label_encoder.classes_:
+            raise ValueError(f"❌ Specified --penalize-class '{args.penalize_class}' not in known classes: {list(label_encoder.classes_)}")
+        penalize_class_index = list(label_encoder.classes_).index(args.penalize_class)
+        logger.info(f"⚖️ Will apply special loss handling to class: {args.penalize_class} (index {penalize_class_index})")
+
+    with open(encoder_path, "w", encoding="utf-8") as f:
+        json.dump({"classes": list(label_encoder.classes_)}, f)
+
+    min_label, max_label = df["tone_label"].min(), df["tone_label"].max()
+    assert min_label >= 0, f"Tone label below 0: {min_label}"
+    assert max_label < len(label_encoder.classes_), f"Tone label above expected range: {max_label}"
+
+    # Conditional split logic for train/eval
+    if args.balance_class_ratio:
+        df = df.sample(frac=1, random_state=42).reset_index(drop=True)  # shuffle once
+        eval_indices = list(range(0, len(df), 10))
+        train_indices = [i for i in range(len(df)) if i not in eval_indices]
+        train_df = df.iloc[train_indices].reset_index(drop=True)
+        eval_df = df.iloc[eval_indices].reset_index(drop=True)
+        logger.info(f"📊 Using 1-in-10 slicing for eval split (balanced set).")
+    else:
+        dataset = Dataset.from_pandas(df)
+        split = dataset.train_test_split(test_size=0.1, seed=42)
+        train_df = split["train"].to_pandas()
+        eval_df = split["test"].to_pandas()
+        logger.info(f"📊 Using HuggingFace random split for eval set (unbalanced set).")
+
+    # --- Save eval dataset to JSONL ---
+    eval_jsonl_path = output_dir / "last_eval_set.jsonl"
+    eval_df.to_json(eval_jsonl_path, orient="records", lines=True, force_ascii=False)
+    logger.info(f"📝 Saved eval dataset used during training to: {eval_jsonl_path}")
+
+    train_dataset = Dataset.from_pandas(train_df)
+    val_dataset = Dataset.from_pandas(eval_df)
+
+    # Tokenizer
+    model_checkpoint = args.model_checkpoint
+    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+    def tokenize_fn(example):
+        max_length = 1024 if "deberta" in model_checkpoint.lower() else 512
+        return tokenizer(example["text"], truncation=True, max_length=max_length)
+
+    # --- Optional holdout evaluation set ---
+    monitor_eval_loader = None
+    if args.evaluation_path:
+        logger.info(f"🧪 Loading holdout monitoring set: {args.evaluation_path}")
+        eval_path = Path(args.evaluation_path)
+        if eval_path.suffix == ".jsonl":
+            holdout_df = load_and_filter_dataframe(eval_path, args.signal_threshold, tone_field=args.label_field)
+        elif eval_path.suffix == ".csv":
+            holdout_df = pd.read_csv(eval_path)
+        elif eval_path.suffix == ".tsv":
+            holdout_df = pd.read_csv(eval_path, sep="\t")
+        else:
+            raise ValueError(f"Unsupported evaluation file type: {eval_path.suffix}")
+        holdout_df = holdout_df[holdout_df[args.label_field].isin(label_list)].reset_index(drop=True)
+        holdout_df["tone_label"] = label_encoder.transform(holdout_df[args.label_field])
+        holdout_dataset = Dataset.from_pandas(holdout_df)
+        tokenized_holdout = holdout_dataset.map(tokenize_fn, batched=True)
+        tokenized_holdout = tokenized_holdout.rename_column("tone_label", "labels")
+        tokenized_holdout.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+        from torch.utils.data import DataLoader
+        monitor_eval_loader = DataLoader(tokenized_holdout, batch_size=32, collate_fn=DataCollatorWithPadding(tokenizer))
+
+    # Tokenize both splits
+    tokenized_train = train_dataset.map(tokenize_fn, batched=True)
+    tokenized_val = val_dataset.map(tokenize_fn, batched=True)
+
+    # Format dataset
+    def format_labels(example):
+        example["labels"] = [example["vividness"], example["emotion"], example["action"], example["tightness"]]
+        example["tone_label"] = int(example["tone_label"])
+        example["tone_label"] = np.int64(example["tone_label"])
+        return example
+
+    if args.task == "classification":
+        tokenized_train = tokenized_train.rename_column("tone_label", "labels")
+        tokenized_train.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+        tokenized_train = tokenized_train.shuffle(seed=42)
+
+        tokenized_val = tokenized_val.rename_column("tone_label", "labels")
+        tokenized_val.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+    else:
+        tokenized_train = tokenized_train.map(format_labels)
+        tokenized_train = tokenized_train.rename_column("labels", "regression_labels")
+        tokenized_train.set_format(type="torch", columns=["input_ids", "attention_mask", "regression_labels", "tone_label"])
+        tokenized_train = tokenized_train.shuffle(seed=42)
+        tokenized_val = tokenized_val.map(format_labels)
+        tokenized_val = tokenized_val.rename_column("labels", "regression_labels")
+        tokenized_val.set_format(type="torch", columns=["input_ids", "attention_mask", "regression_labels", "tone_label"])
+
+    from transformers import AutoConfig, AutoModelForSequenceClassification
+    config = AutoConfig.from_pretrained(model_checkpoint, num_labels=6)
+    model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, config=config)
+
+    base_lr = 5e-5
+    # Setup parameter groups
+    optimizer_grouped_parameters = [{"params": model.parameters(), "lr": base_lr}]
+    model_name = args.model_checkpoint.split("/")[-1]
+    dataset_name = Path(args.data_path).stem
+    signal_strength = f"s{int(args.signal_threshold)}" if args.signal_threshold is not None else "sNA"
+    ratio_tag = f"r{args.balance_class_ratio}"
+    run_name = f"{model_name}-{dataset_name}-{ratio_tag}-{signal_strength}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
     #
     # Determine batch size from shared utility
-    base_batch_size = determine_batch_size(args_cli.model_checkpoint, args_cli.no_batching)
+    base_batch_size = determine_batch_size(args.model_checkpoint, args.no_batching)
     logger.info(f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
     dynamic_eval_steps = calculate_dynamic_eval_steps(len(tokenized_train), base_batch_size)
     logger.info(f"📊 Eval every {dynamic_eval_steps} steps based on ~1/3 epoch heuristic.")
 
-    args = TrainingArguments(
+    hf_args = TrainingArguments(
         run_name=run_name,
         logging_dir=f"logs/{run_name}",
-        output_dir=args_cli.output_dir,
+        output_dir=args.output_dir,
         per_device_train_batch_size=base_batch_size,
         per_device_eval_batch_size=base_batch_size,
-        num_train_epochs=args_cli.total_epochs,
+        num_train_epochs=args.total_epochs,
         eval_strategy="steps",
         eval_steps=dynamic_eval_steps,
         save_strategy="steps",
@@ -378,7 +382,7 @@ def main():
         label_names=["labels"],
     )
 
-    trainer_class = ClassificationTrainer if args_cli.task == "classification" else RegressionTrainer
+    trainer_class = ClassificationTrainer if args.task == "classification" else RegressionTrainer
 
     def compute_metrics(eval_preds):
         logits = eval_preds.predictions
@@ -447,7 +451,7 @@ def main():
 
     trainer = trainer_class(
         model=model,
-        args=args,
+        args=hf_args,
         train_dataset=tokenized_train,
         eval_dataset=tokenized_val,
         data_collator=DataCollatorWithPadding(tokenizer),
@@ -455,7 +459,7 @@ def main():
         callbacks=[
             EarlyStoppingCallback(early_stopping_patience=7),
             EpochNormalizedLogger(writer),
-            MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=(1024 if "deberta" in model_checkpoint.lower() else 512)),
+            MemoryUsageLogger(model, args.model_checkpoint, base_batch_size, input_size=(1024 if "deberta" in model_checkpoint.lower() else 512)),
             *([ExtraEvalCallback(model, monitor_eval_loader, writer)] if monitor_eval_loader else []),
             ManualEarlyStopCallback(stop_file="ranker_model/stop_training.txt"),
         ],
@@ -477,20 +481,7 @@ def main():
     # Reload best checkpoint to ensure we save the best model's head
     best_path = trainer.state.best_model_checkpoint
     logger.info(f"🌟 Reloading best model weights from: {best_path}")
-    adapter_path = os.path.join(best_path, "adapter_model.safetensors")
-    head_path = os.path.join(best_path, "ranker_head.pt")
-
-    if os.path.exists(adapter_path):
-        logger.info("🪛 Detected PEFT adapter. Skipping full model weight load.")
-        head_path = os.path.join(best_path, "ranker_head.pt")
-        assert os.path.exists(head_path), f"❌ Missing expected classifier head weights: {head_path}"
-        model.head.load_state_dict(torch.load(head_path, map_location="cpu", weights_only=True))
-        logger.info(f"🧠 Reloaded best classifier head weights from {head_path}")
-        # --- Checksum PEFT adapter after reload if debug enabled ---
-        if args_cli.debug:
-            adapter_checksum = checksum_peft(model.model_backbone)
-            logger.debug(f"🧾 Loaded PEFT adapter checksum during best model reload: {adapter_checksum}")
-    elif os.path.exists(os.path.join(best_path, "model.safetensors")):
+    if os.path.exists(os.path.join(best_path, "model.safetensors")):
         logger.info("💾 Loading full model weights from model.safetensors")
         from safetensors.torch import load_file as safe_load
         model.load_state_dict(safe_load(os.path.join(best_path, "model.safetensors")), strict=False)

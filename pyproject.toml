@@ -1,6 +1,6 @@
 [project]
 name = "llm-utils"
-version = "0.3.3"
+version = "0.3.4"
 description = "Lightweight utilities for LLM data parsing and training"
 authors = [
     { name="Mitchell Currie" }
@@ -19,7 +19,8 @@ dependencies = [
     "sentence-transformers",
     "pynvml",
     "urllib3",
-    "safetensors"
+    "safetensors",
+    "tensorboard"
 ]
 
 [project.urls]
