@@ -162,6 +162,23 @@ Therefore, a `PARASEP_CHANGE` is appropriate to mark this transition.
         # Ensure no console print happens for valid responses
         self.console.print.assert_not_called()
 
+    def test_should_scene_contain_change_prefix(self):
+        response = """Some original prompt [Y/N]: **N**
+
+Some long winded justification."""
+        result = process_llm_response(response, self.console)
+        self.assertEqual(result, LLMResponse.NEGATIVE)
+        self.console.print.assert_not_called()
+
+    def test_should_scene_contain_change_prefix_with_explanation(self):
+        response = """Some original prompt [Y/N]: **N**
+
+**Explanation:**  
+Some long winded justification."""
+        result = process_llm_response(response, self.console)
+        self.assertEqual(result, LLMResponse.NEGATIVE)
+        self.console.print.assert_not_called()
+
 class TestJsonExtractionUtility(unittest.TestCase):
     def test_plain_json_only(self):
         text = '[{"name": "Alice", "aliases": []}, {"name": "Bob", "aliases": []}]'
