@@ -14,14 +14,14 @@ def process_llm_response(response, console=None):
         cleaned = re.sub(r"\[\s*y\s*/\s*n\s*\]\s*[:：]?", "", cleaned, flags=re.IGNORECASE).strip()
 
         token = re.sub(r'\s+', '', cleaned.lower())
-        match = re.match(r"^[\[*'\"#(]*([yn])[\]*'\"#).:]*", token)
+        match = re.match(r"^[\[\(\*'\"#]*([yn])[\]\)\*'\"#.:]*", token)
         if not match:
             # Fallback: scrub line of known prompt pattern and re-evaluate
             fallback_cleaned = re.sub(r"^.*?\[\s*y\s*/?\s*n\s*\]\s*[:：]?\s*", "", cleaned, flags=re.IGNORECASE | re.DOTALL).strip()
             fallback_cleaned = re.sub(r"^.*?\*\*[yn]\*\*", lambda m: m.group(0)[-4:], fallback_cleaned, flags=re.IGNORECASE)
-
+            print(fallback_cleaned)
             token = re.sub(r'\s+', '', fallback_cleaned.lower())
-            match = re.match(r"^[\[*'\"#(]*([yn])[\]*'\"#).:]*", token)
+            match = re.match(r"^\w+ ?[\[\(\*'\"#]*([yn])[\]\)\*'\"#.:]*", token)
 
         if match:
             answer = match.group(1).strip().lower()

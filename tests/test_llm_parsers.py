@@ -179,6 +179,16 @@ Some long winded justification."""
         self.assertEqual(result, LLMResponse.NEGATIVE)
         self.console.print.assert_not_called()
 
+    def test_affirmative_answer_with_explanation(self):
+            response = """**Answer:**  
+    Some waffle
+
+    **Explanation:**  
+    Explanation (Y) More detail"""
+            result = process_llm_response(response, self.console)
+            self.assertEqual(result, LLMResponse.AFFIRMATIVE)
+            self.console.print.assert_not_called()
+
 class TestJsonExtractionUtility(unittest.TestCase):
     def test_plain_json_only(self):
         text = '[{"name": "Alice", "aliases": []}, {"name": "Bob", "aliases": []}]'
