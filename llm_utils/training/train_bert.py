@@ -234,10 +234,13 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     encoder_path = output_dir / "tone_label_encoder.json"
 
+    # Internal column name for encoded labels
+    label_column_internal = "label_index"
+
     label_encoder = LabelEncoder()
     df = df[df[args.label_field].isin(label_list)].reset_index(drop=True)
     label_encoder.fit(label_list)
-    df["tone_label"] = label_encoder.transform(df[args.label_field])
+    df[label_column_internal] = label_encoder.transform(df[args.label_field])
 
     # --- Penalize class logic ---
     penalize_class_index = None
@@ -250,9 +253,9 @@ def main():
     with open(encoder_path, "w", encoding="utf-8") as f:
         json.dump({"classes": list(label_encoder.classes_)}, f)
 
-    min_label, max_label = df["tone_label"].min(), df["tone_label"].max()
-    assert min_label >= 0, f"Tone label below 0: {min_label}"
-    assert max_label < len(label_encoder.classes_), f"Tone label above expected range: {max_label}"
+    min_label, max_label = df[label_column_internal].min(), df[label_column_internal].max()
+    assert min_label >= 0, f"Label below 0: {min_label}"
+    assert max_label < len(label_encoder.classes_), f"Label above expected range: {max_label}"
 
     # Conditional split logic for train/eval
     if args.balance_class_ratio:
@@ -299,10 +302,10 @@ def main():
         else:
             raise ValueError(f"Unsupported evaluation file type: {eval_path.suffix}")
         holdout_df = holdout_df[holdout_df[args.label_field].isin(label_list)].reset_index(drop=True)
-        holdout_df["tone_label"] = label_encoder.transform(holdout_df[args.label_field])
+        holdout_df[label_column_internal] = label_encoder.transform(holdout_df[args.label_field])
         holdout_dataset = Dataset.from_pandas(holdout_df)
         tokenized_holdout = holdout_dataset.map(tokenize_fn, batched=True)
-        tokenized_holdout = tokenized_holdout.rename_column("tone_label", "labels")
+        tokenized_holdout = tokenized_holdout.rename_column(label_column_internal, "labels")
         tokenized_holdout.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
         from torch.utils.data import DataLoader
         monitor_eval_loader = DataLoader(tokenized_holdout, batch_size=32, collate_fn=DataCollatorWithPadding(tokenizer))
@@ -314,25 +317,25 @@ def main():
     # Format dataset
     def format_labels(example):
         example["labels"] = [example["vividness"], example["emotion"], example["action"], example["tightness"]]
-        example["tone_label"] = int(example["tone_label"])
-        example["tone_label"] = np.int64(example["tone_label"])
+        example[label_column_internal] = int(example[label_column_internal])
+        example[label_column_internal] = np.int64(example[label_column_internal])
         return example
 
     if args.task == "classification":
-        tokenized_train = tokenized_train.rename_column("tone_label", "labels")
+        tokenized_train = tokenized_train.rename_column(label_column_internal, "labels")
         tokenized_train.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
         tokenized_train = tokenized_train.shuffle(seed=42)
 
-        tokenized_val = tokenized_val.rename_column("tone_label", "labels")
+        tokenized_val = tokenized_val.rename_column(label_column_internal, "labels")
         tokenized_val.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
     else:
         tokenized_train = tokenized_train.map(format_labels)
         tokenized_train = tokenized_train.rename_column("labels", "regression_labels")
-        tokenized_train.set_format(type="torch", columns=["input_ids", "attention_mask", "regression_labels", "tone_label"])
+        tokenized_train.set_format(type="torch", columns=["input_ids", "attention_mask", "regression_labels", label_column_internal])
         tokenized_train = tokenized_train.shuffle(seed=42)
         tokenized_val = tokenized_val.map(format_labels)
         tokenized_val = tokenized_val.rename_column("labels", "regression_labels")
-        tokenized_val.set_format(type="torch", columns=["input_ids", "attention_mask", "regression_labels", "tone_label"])
+        tokenized_val.set_format(type="torch", columns=["input_ids", "attention_mask", "regression_labels", label_column_internal])
 
     from transformers import AutoConfig, AutoModelForSequenceClassification
     config = AutoConfig.from_pretrained(model_checkpoint, num_labels=6)
@@ -472,7 +475,7 @@ def main():
     else:
         model_name = getattr(model.config, "architectures", ["Unknown"])[0]
         logger.warning(f"⚠️ Could not determine model output classes for model type: {model_name}")
-    logger.info(f"✅ Max label index in dataset: {df['tone_label'].max()}")
+    logger.info(f"✅ Max label index in dataset: {df[label_column_internal].max()}")
 
     trainer.train()
 
