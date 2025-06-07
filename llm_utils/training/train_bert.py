@@ -12,6 +12,7 @@ from torch.nn.functional import softmax
 import numpy as np
 from sklearn.metrics import f1_score
 import logging
+logger = logging.getLogger(__name__)
 import os
 from datetime import datetime
 import shutil
@@ -198,7 +199,6 @@ def main():
         raise ValueError("❌ --use-focal-loss and --focus-weak-classes cannot be enabled at the same time. Please choose only one.")
 
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
-    logger = logging.getLogger(__name__)
 
     # data_path = Path(args.data_path)  # Removed: now assigned above
     if data_path.suffix == ".jsonl":
@@ -484,9 +484,6 @@ def main():
     writer = SummaryWriter(log_dir=args.logging_dir)
 
     # --- ExtraEvalCallback definition ---
-    from transformers import TrainerCallback
-    from sklearn.metrics import accuracy_score, f1_score
-    import torch
     class ExtraEvalCallback(TrainerCallback):
         def __init__(self, model, dataloader, writer, name="monitor_eval"):
             self.model = model
