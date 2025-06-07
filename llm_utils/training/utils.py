@@ -21,7 +21,7 @@ def load_and_filter_dataframe(data_path: Path, label_field: str = "label") -> pd
                 skipped += 1
     df = pd.DataFrame(rows)
     # drop invalid labels
-    df = df[df[label_field].notna() & df[label_field].apply(lambda x: isinstance(x, str) and x.strip())]
+    df = df[df[label_field].notna()]
     return df
 
 def calculate_eval_size(total_size: int, eval_ratio: float = 0.1) -> int:

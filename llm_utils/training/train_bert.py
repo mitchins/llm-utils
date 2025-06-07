@@ -171,6 +171,8 @@ def main():
     # New argument for label list
     parser.add_argument("--label-list", type=str, default=None,
                         help="Optional comma-separated list of labels to clamp to. If not provided, all seen labels are used.")
+    # New argument for text field
+    parser.add_argument("--text-field", type=str, default="text", help="Name of the input text field (default: 'text')")
     args = parser.parse_args()
     data_path = Path(args.data_path)
     if not data_path.exists():
@@ -195,19 +197,29 @@ def main():
         raise ValueError(f"Unsupported file type: {data_path.suffix}")
 
     # --- Label list logic ---
+    label_list = None
     if args.label_list:
         label_list = [lbl.strip() for lbl in args.label_list.split(",")]
         logger.info(f"🔖 Using label list from --label-list: {label_list}")
     else:
-        label_list = sorted(df[args.label_field].unique())
-        logger.info(f"🔖 No --label-list provided, using all seen labels: {label_list}")
+        label_list = sorted(df[args.label_field].unique().tolist())
+        logger.info(f"🔖 No --label-list provided, using all observed labels: {label_list}")
+
+    # --- Validate label list is not empty
+    if not label_list:
+        logger.error("❌ No valid labels found in dataset after filtering.")
+        sys.exit(1)
 
     # Balance classes using top-ranked entries if requested and task is classification
     if args.balance_class_ratio and args.task == "classification":
         if {"vividness", "emotion", "action"}.issubset(df.columns):
             df["combined_score"] = df["vividness"] + df["emotion"] + df["action"]
         top_by_class = []
-        min_count = df[df[args.label_field].isin(label_list)][args.label_field].value_counts().min()
+        filtered_df = df[df[args.label_field].isin(label_list)]
+        if filtered_df.empty:
+            logger.error("❌ No data remaining after label filtering for balancing.")
+            sys.exit(1)
+        min_count = filtered_df[args.label_field].value_counts().min()
         max_allowed = int(min_count * args.balance_class_ratio)
         for tone in label_list:
             class_rows = df[df[args.label_field] == tone]
@@ -232,14 +244,19 @@ def main():
         logger.info(f"🧹 Removing existing model output: {output_dir}")
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    encoder_path = output_dir / "tone_label_encoder.json"
+    encoder_path = output_dir / f"{args.label_field}_label_encoder.json"
 
     # Internal column name for encoded labels
     label_column_internal = "label_index"
 
     label_encoder = LabelEncoder()
-    df = df[df[args.label_field].isin(label_list)].reset_index(drop=True)
-    label_encoder.fit(label_list)
+    if label_list is not None:
+        df = df[df[args.label_field].isin(label_list)].reset_index(drop=True)
+    label_encoder.fit(label_list if label_list is not None else sorted(df[args.label_field].unique()))
+    # Extra assertion: ensure label list is not empty after filtering
+    if not label_list:
+        logger.error("❌ No valid labels found in dataset after filtering.")
+        sys.exit(1)
     df[label_column_internal] = label_encoder.transform(df[args.label_field])
 
     # --- Penalize class logic ---
@@ -251,11 +268,19 @@ def main():
         logger.info(f"⚖️ Will apply special loss handling to class: {args.penalize_class} (index {penalize_class_index})")
 
     with open(encoder_path, "w", encoding="utf-8") as f:
-        json.dump({"classes": list(label_encoder.classes_)}, f)
+        json.dump({"classes": [int(x) if isinstance(x, (np.integer,)) else x for x in label_encoder.classes_]}, f)
 
-    min_label, max_label = df[label_column_internal].min(), df[label_column_internal].max()
-    assert min_label >= 0, f"Label below 0: {min_label}"
-    assert max_label < len(label_encoder.classes_), f"Label above expected range: {max_label}"
+    # --- Safer label sanity check ---
+    if df.empty or df[label_column_internal].isnull().any():
+        logger.error("❌ Label index column contains NaNs or the dataframe is empty. Cannot proceed with training.")
+        logger.error(f"🔍 DataFrame shape: {df.shape}")
+        logger.error(f"🔍 First few rows:\n{df.head(5)}")
+        logger.error(f"🔍 Unique values in '{args.label_field}': {df[args.label_field].unique().tolist()}")
+        logger.error(f"🔍 Nulls in '{label_column_internal}': {df[label_column_internal].isnull().sum()}")
+        sys.exit(1)
+    else:
+        min_label, max_label = df[label_column_internal].min(), df[label_column_internal].max()
+        logger.debug(f"✅ Label index range: {min_label} to {max_label}")
 
     # Conditional split logic for train/eval
     if args.balance_class_ratio:
@@ -286,7 +311,7 @@ def main():
 
     def tokenize_fn(example):
         max_length = 1024 if "deberta" in model_checkpoint.lower() else 512
-        return tokenizer(example["text"], truncation=True, max_length=max_length)
+        return tokenizer(example[args.text_field], truncation=True, max_length=max_length)
 
     # --- Optional holdout evaluation set ---
     monitor_eval_loader = None
@@ -505,7 +530,7 @@ def main():
     model.save_pretrained(final_path)
 
     tokenizer.save_pretrained(final_path)
-    with open(final_path / "tone_label_encoder.json", "w", encoding="utf-8") as f:
+    with open(final_path / f"{args.label_field}_label_encoder.json", "w", encoding="utf-8") as f:
         json.dump({"classes": list(label_encoder.classes_)}, f)
 
     logger.info(f"✅ Saved final model to {final_path}")
