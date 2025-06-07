@@ -1,6 +1,6 @@
 [project]
 name = "llm-utils"
-version = "0.3.17"
+version = "0.3.18"
 description = "Lightweight utilities for LLM data parsing and training"
 authors = [
     { name="Mitchell Currie" }
@@ -36,3 +36,4 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 train-bert = "llm_utils.training.train_bert:main"
+test-bert = "llm_utils.inference.test_bert:main"
