@@ -44,6 +44,11 @@ grad_log = []
 
 # Classification Trainer
 class ClassificationTrainer(Trainer):
+    def __init__(self, *args, args_cli=None, label_encoder=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.args_cli = args_cli
+        self.label_encoder = label_encoder
+
     def compute_loss(self, model, inputs, num_items_in_batch=None, return_outputs=False):
         # Ensure DistilBERT doesn't receive unexpected arguments like 'labels'
         model_input_keys = ["input_ids", "attention_mask", "token_type_ids"]
@@ -54,12 +59,12 @@ class ClassificationTrainer(Trainer):
 
         # --- Dynamic class weighting for weak/strong classes
         class_weights = None
-        if args_cli.focus_weak_classes and hasattr(self, "trainer") and hasattr(self.trainer, "state") and self.trainer.state.log_history:
+        if self.args_cli.focus_weak_classes and hasattr(self, "trainer") and hasattr(self.trainer, "state") and self.trainer.state.log_history:
             # Pull most recent eval F1 scores per class
             history = self.trainer.state.log_history[::-1]
             for entry in history:
-                if all(f"eval_f1_{tone}" in entry for tone in label_encoder.classes_):
-                    f1_scores = np.array([entry[f"eval_f1_{tone}"] for tone in label_encoder.classes_])
+                if all(f"eval_f1_{tone}" in entry for tone in self.label_encoder.classes_):
+                    f1_scores = np.array([entry[f"eval_f1_{tone}"] for tone in self.label_encoder.classes_])
                     max_f1 = np.max(f1_scores)
                     class_weights = 0.5 + 1.5 * ((max_f1 - f1_scores) / (max_f1 + 1e-6))
                     logger.info(f"🎯 Dynamic class weighting (scaled by F1 gap): {class_weights.round(3).tolist()}")
@@ -72,7 +77,7 @@ class ClassificationTrainer(Trainer):
         )
 
         # --- Focal loss integration ---
-        if args_cli.use_focal_loss:
+        if self.args_cli.use_focal_loss:
             gamma = 2.0
             logits_softmax = torch.nn.functional.softmax(logits, dim=1)
             true_prob = logits_softmax[torch.arange(logits.size(0)), labels]
@@ -86,7 +91,7 @@ class ClassificationTrainer(Trainer):
             loss = loss_fct(logits, labels)
 
         # Apply penalties for a specific class if configured and no other loss mods active
-        if (not args_cli.use_focal_loss and not args_cli.focus_weak_classes
+        if (not self.args_cli.use_focal_loss and not self.args_cli.focus_weak_classes
             and 'penalize_class_index' in globals() and penalize_class_index is not None):
             preds = torch.argmax(logits, dim=1)
             penalty_mask = (labels == penalize_class_index) | (preds == penalize_class_index)
@@ -491,6 +496,8 @@ def main():
             ManualEarlyStopCallback(stop_file="ranker_model/stop_training.txt"),
         ],
         compute_metrics=compute_metrics,
+        args_cli=args,
+        label_encoder=label_encoder,
     )
 
     logger.info(f"✅ Label class count (from encoder): {len(label_encoder.classes_)}")
