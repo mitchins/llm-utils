@@ -28,6 +28,12 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument("--debug", action="store_true", help="Enable debug output")
 parser.add_argument("--threads", type=int, default=1, help="Number of worker threads for dataset.map (default: 1)")
+parser.add_argument(
+    "--gradient-accumulation-steps",
+    type=int,
+    default=1,
+    help="Number of steps to accumulate gradients before optimizing (default: 1 = no accumulation)"
+)
 parser.add_argument("--allow-empty-output", action="store_true", help="Permit empty strings in the target/output column")
 parser.add_argument(
     "--batch-size", type=int, default=None,
@@ -390,6 +396,7 @@ def main():
         learning_rate=args_cli.learning_rate,
         warmup_steps=args_cli.warm_up_steps,
         lr_scheduler_type=args_cli.lr_scheduler_type,
+        gradient_accumulation_steps=args_cli.gradient_accumulation_steps,
     )
 
     # The run_name variable below is now redundant since it's incorporated above; remove if not used elsewhere.
