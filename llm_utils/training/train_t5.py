@@ -108,9 +108,11 @@ def main():
     # Logging at the start of the script
     logging.basicConfig(level=logging.DEBUG if args_cli.debug else logging.INFO)
     logger = logging.getLogger(__name__)
+    logger.info("🚦 Process start: initializing training script.")
     logger.info("🚀 Starting T5 training script...")
     logger.info(f"📁 Loading data from {args_cli.data_path} ({args_cli.data_format})")
     logger.info(f"🧠 Using model checkpoint: {args_cli.model_checkpoint}")
+    logger.info("🧮 Initializing dataset preprocessing and tokenization pipeline...")
 
     # Auto-detect data format if not specified
     from pathlib import Path as _Path
@@ -133,7 +135,11 @@ def main():
             chunk = chunk[chunk[args_cli.input_col].astype(str).str.strip() != ""]
             if not args_cli.allow_empty_output:
                 chunk = chunk[chunk[args_cli.target_col].astype(str).str.strip() != ""]
-            hf_datasets.append(Dataset.from_pandas(chunk, preserve_index=False))
+            # Convert chunk to HF dataset
+            chunk_dataset = Dataset.from_pandas(chunk, preserve_index=False)
+            # Tokenize the chunk (if you tokenize here, drop input/output columns)
+            # If not, just append as before
+            hf_datasets.append(chunk_dataset)
         dataset = concatenate_datasets(hf_datasets)
         logger.info(f"📊 Loaded {len(dataset):,} examples from CSV using chunked streaming load")
     else:
@@ -386,6 +392,11 @@ def main():
         num_proc=args_cli.threads,
         with_tqdm=True
     )
+    # Remove 'input' and 'output' columns after tokenization, if present
+    if "input" in tokenized_full.column_names:
+        tokenized_full = tokenized_full.remove_columns(["input"])
+    if "output" in tokenized_full.column_names:
+        tokenized_full = tokenized_full.remove_columns(["output"])
     report_memory()
     tokenized_full = tokenized_full.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
     logger.info(f"✅ Tokenization complete: {len(tokenized_full):,} examples")
