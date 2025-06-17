@@ -10,6 +10,7 @@ from transformers import DataCollatorWithPadding
 import logging
 import os
 from datetime import datetime
+import psutil
 
 from transformers import EarlyStoppingCallback
 from .callbacks import EpochNormalizedLogger, MemoryUsageLogger, ManualEarlyStopCallback
@@ -126,13 +127,26 @@ def main():
         args_cli.output_dir = f"{args_cli.task_name}_model"
 
     if args_cli.data_format == "csv":
-        df = pd.read_csv(Path(args_cli.data_path))
+        from datasets import concatenate_datasets, Dataset
+        hf_datasets = []
+        for chunk in pd.read_csv(Path(args_cli.data_path), chunksize=10_000):
+            chunk = chunk[chunk[args_cli.input_col].astype(str).str.strip() != ""]
+            if not args_cli.allow_empty_output:
+                chunk = chunk[chunk[args_cli.target_col].astype(str).str.strip() != ""]
+            hf_datasets.append(Dataset.from_pandas(chunk, preserve_index=False))
+        dataset = concatenate_datasets(hf_datasets)
+        logger.info(f"📊 Loaded {len(dataset):,} examples from CSV using chunked streaming load")
     else:
         df = pd.read_json(Path(args_cli.data_path), lines=True)
 
     # Sanity check: no empty input or output rows
-    num_empty_input = (df[args_cli.input_col].astype(str).str.strip() == "").sum()
-    num_empty_output = (df[args_cli.target_col].astype(str).str.strip() == "").sum()
+    if args_cli.data_format == "csv":
+        # dataset is a HuggingFace Dataset
+        num_empty_input = sum([str(x).strip() == "" for x in dataset[args_cli.input_col]])
+        num_empty_output = sum([str(x).strip() == "" for x in dataset[args_cli.target_col]])
+    else:
+        num_empty_input = (df[args_cli.input_col].astype(str).str.strip() == "").sum()
+        num_empty_output = (df[args_cli.target_col].astype(str).str.strip() == "").sum()
 
     if num_empty_input > 0:
         raise ValueError(f"❌ Found {num_empty_input} empty input rows in '{args_cli.input_col}' — these must be removed or filled.")
@@ -148,39 +162,77 @@ def main():
     # Set tokenizer max length as specified
     tokenizer.model_max_length = args_cli.max_input_length
 
-    tokenized_lengths = tokenizer(df[args_cli.input_col].tolist(), add_special_tokens=False, return_length=True, truncation=False)
-    df["input_length"] = tokenized_lengths["length"]
-    total_examples = len(df)
-    df = df[df["input_length"] <= args_cli.max_input_length].copy()
-    dropped_examples = total_examples - len(df)
-    logger.info(f"🧹 Filtered {dropped_examples}/{total_examples} examples due to excessive input length.")
-
-    if args_cli.stratify_length:
-        def strat_length(output):
-            try:
-                output = output.strip()
-                if output.startswith("{") or output.startswith("["):
-                    parsed = json.loads(output)
-                    return len(parsed) if isinstance(parsed, (list, dict)) else 0
-                else:
-                    return len(output.split())
-            except Exception:
-                return 0
-
-        df["length_bin"] = pd.qcut(df[args_cli.target_col].map(strat_length), q=5, duplicates="drop")
-        val_df = df.groupby("length_bin", group_keys=False).apply(lambda g: g.sample(frac=args_cli.validation_size))
-        train_df = df.drop(val_df.index)
-        train_dataset = Dataset.from_pandas(train_df.drop(columns=["length_bin", "input_length"]))
-        val_dataset = Dataset.from_pandas(val_df.drop(columns=["length_bin", "input_length"]))
-    else:
-        dataset = Dataset.from_pandas(df.drop(columns=["input_length"]))
+    if args_cli.data_format == "csv":
+        # dataset is a HuggingFace Dataset
+        tokenized_lengths = tokenizer(dataset[args_cli.input_col], add_special_tokens=False, return_length=True, truncation=False)
+        input_lengths = tokenized_lengths["length"]
         total_examples = len(dataset)
-        eval_size = int(total_examples * args_cli.validation_size)
-        train_size = total_examples - eval_size
-        logger.info(f"📊 Total examples: {total_examples}, using {eval_size} for validation set ({(eval_size/total_examples)*100:.2f}%)")
-        split = dataset.train_test_split(test_size=eval_size/total_examples, seed=42)
-        train_dataset = split["train"]
-        val_dataset = split["test"]
+        # Filter examples with input length > max_input_length
+        indices_to_keep = [i for i, l in enumerate(input_lengths) if l <= args_cli.max_input_length]
+        dropped_examples = total_examples - len(indices_to_keep)
+        dataset = dataset.select(indices_to_keep)
+        logger.info(f"🧹 Filtered {dropped_examples}/{total_examples} examples due to excessive input length.")
+        # If stratify_length is requested, convert to pandas for binning, then back to Dataset
+        if args_cli.stratify_length:
+            import pandas as pd
+            def strat_length(output):
+                try:
+                    output = str(output).strip()
+                    if output.startswith("{") or output.startswith("["):
+                        parsed = json.loads(output)
+                        return len(parsed) if isinstance(parsed, (list, dict)) else 0
+                    else:
+                        return len(output.split())
+                except Exception:
+                    return 0
+            df = dataset.to_pandas()
+            df["length_bin"] = pd.qcut(df[args_cli.target_col].map(strat_length), q=5, duplicates="drop")
+            val_df = df.groupby("length_bin", group_keys=False).apply(lambda g: g.sample(frac=args_cli.validation_size))
+            train_df = df.drop(val_df.index)
+            train_dataset = Dataset.from_pandas(train_df.drop(columns=["length_bin"]))
+            val_dataset = Dataset.from_pandas(val_df.drop(columns=["length_bin"]))
+        else:
+            total_examples = len(dataset)
+            eval_size = int(total_examples * args_cli.validation_size)
+            train_size = total_examples - eval_size
+            logger.info(f"📊 Total examples: {total_examples}, using {eval_size} for validation set ({(eval_size/total_examples)*100:.2f}%)")
+            split = dataset.train_test_split(test_size=eval_size/total_examples, seed=42)
+            train_dataset = split["train"]
+            val_dataset = split["test"]
+    else:
+        # original jsonl logic
+        tokenized_lengths = tokenizer(df[args_cli.input_col].tolist(), add_special_tokens=False, return_length=True, truncation=False)
+        df["input_length"] = tokenized_lengths["length"]
+        total_examples = len(df)
+        df = df[df["input_length"] <= args_cli.max_input_length].copy()
+        dropped_examples = total_examples - len(df)
+        logger.info(f"🧹 Filtered {dropped_examples}/{total_examples} examples due to excessive input length.")
+        if args_cli.stratify_length:
+            def strat_length(output):
+                try:
+                    output = output.strip()
+                    if output.startswith("{") or output.startswith("["):
+                        parsed = json.loads(output)
+                        return len(parsed) if isinstance(parsed, (list, dict)) else 0
+                    else:
+                        return len(output.split())
+                except Exception:
+                    return 0
+
+            df["length_bin"] = pd.qcut(df[args_cli.target_col].map(strat_length), q=5, duplicates="drop")
+            val_df = df.groupby("length_bin", group_keys=False).apply(lambda g: g.sample(frac=args_cli.validation_size))
+            train_df = df.drop(val_df.index)
+            train_dataset = Dataset.from_pandas(train_df.drop(columns=["length_bin", "input_length"]))
+            val_dataset = Dataset.from_pandas(val_df.drop(columns=["length_bin", "input_length"]))
+        else:
+            dataset = Dataset.from_pandas(df.drop(columns=["input_length"]))
+            total_examples = len(dataset)
+            eval_size = int(total_examples * args_cli.validation_size)
+            train_size = total_examples - eval_size
+            logger.info(f"📊 Total examples: {total_examples}, using {eval_size} for validation set ({(eval_size/total_examples)*100:.2f}%)")
+            split = dataset.train_test_split(test_size=eval_size/total_examples, seed=42)
+            train_dataset = split["train"]
+            val_dataset = split["test"]
 
     # Warn if user requests a long context but model is not a known long-context model
     if args_cli.max_input_length > 2048 and not any(s in model_checkpoint.lower() for s in ["longt5", "long-t5", "tglobal"]):
@@ -320,10 +372,19 @@ def main():
         return model_inputs
 
     logger.info("🪄 Starting dataset tokenization...")
+    # --- Memory usage before tokenization ---
+    process = psutil.Process(os.getpid())
+    logger.info(f"🧠 Memory usage before tokenization: {process.memory_info().rss / (1024 * 1024):.2f} MB")
     # Tokenize the full dataset, filter overlength, then split
-    tokenized_full = dataset.map(preprocess_t5, desc="🔄 Tokenizing full dataset", num_proc=args_cli.threads)
+    tokenized_full = dataset.map(
+        preprocess_t5,
+        desc="🔄 Tokenizing full dataset",
+        num_proc=args_cli.threads,
+        with_tqdm=True
+    )
     tokenized_full = tokenized_full.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
-    logger.info("✅ Tokenization complete.")
+    logger.info(f"🧠 Memory usage after tokenization: {process.memory_info().rss / (1024 * 1024):.2f} MB")
+    logger.info(f"✅ Tokenization complete: {len(tokenized_full):,} examples")
 
     # Then split
     eval_size = int(len(tokenized_full) * args_cli.validation_size)
