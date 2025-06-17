@@ -26,6 +26,7 @@ parser = argparse.ArgumentParser(
     description="Generic seq2seq trainer for tasks like summarization, translation, paraphrasing"
 )
 parser.add_argument("--debug", action="store_true", help="Enable debug output")
+parser.add_argument("--threads", type=int, default=1, help="Number of worker threads for dataset.map (default: 1)")
 parser.add_argument("--allow-empty-output", action="store_true", help="Permit empty strings in the target/output column")
 parser.add_argument(
     "--batch-size", type=int, default=None,
@@ -103,6 +104,13 @@ parser.add_argument(
 def main():
     args_cli = parser.parse_args()
 
+    # Logging at the start of the script
+    logging.basicConfig(level=logging.DEBUG if args_cli.debug else logging.INFO)
+    logger = logging.getLogger(__name__)
+    logger.info("🚀 Starting T5 training script...")
+    logger.info(f"📁 Loading data from {args_cli.data_path} ({args_cli.data_format})")
+    logger.info(f"🧠 Using model checkpoint: {args_cli.model_checkpoint}")
+
     # Auto-detect data format if not specified
     from pathlib import Path as _Path
     if args_cli.data_format is None:
@@ -116,9 +124,6 @@ def main():
 
     if args_cli.output_dir is None:
         args_cli.output_dir = f"{args_cli.task_name}_model"
-
-    logging.basicConfig(level=logging.DEBUG if args_cli.debug else logging.INFO)
-    logger = logging.getLogger(__name__)
 
     if args_cli.data_format == "csv":
         df = pd.read_csv(Path(args_cli.data_path))
@@ -137,7 +142,9 @@ def main():
 
     # ----------------- TOKEN LENGTH FILTERING (vectorized, before split) -----------------
     model_checkpoint = args_cli.model_checkpoint
+    logger.info("🔤 Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+    logger.info("✅ Tokenizer loaded.")
     # Set tokenizer max length as specified
     tokenizer.model_max_length = args_cli.max_input_length
 
@@ -179,8 +186,10 @@ def main():
     if args_cli.max_input_length > 2048 and not any(s in model_checkpoint.lower() for s in ["longt5", "long-t5", "tglobal"]):
         logger.warning(f"⚠️ Specified max_input_length={args_cli.max_input_length} but model '{model_checkpoint}' may not support long contexts. Proceed with caution.")
 
+    logger.info("🧠 Loading model...")
     # Prepare model
     model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+    logger.info("✅ Model loaded.")
 
     rouge_metric = evaluate.load("rouge")
     if args_cli.calculate_meteor:
@@ -310,9 +319,11 @@ def main():
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
 
+    logger.info("🪄 Starting dataset tokenization...")
     # Tokenize the full dataset, filter overlength, then split
-    tokenized_full = dataset.map(preprocess_t5, desc="🔄 Tokenizing full dataset")
+    tokenized_full = dataset.map(preprocess_t5, desc="🔄 Tokenizing full dataset", num_proc=args_cli.threads)
     tokenized_full = tokenized_full.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
+    logger.info("✅ Tokenization complete.")
 
     # Then split
     eval_size = int(len(tokenized_full) * args_cli.validation_size)
@@ -377,6 +388,7 @@ def main():
 
     writer = SummaryWriter(log_dir=args.logging_dir)
 
+    logger.info("🏋️ Beginning training loop...")
     trainer = Seq2SeqTrainer(
         model=model,
         args=args,
