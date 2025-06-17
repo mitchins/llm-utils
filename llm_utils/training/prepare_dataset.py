@@ -5,6 +5,7 @@ from datasets import load_dataset, Dataset, concatenate_datasets
 from transformers import AutoTokenizer
 from tqdm import tqdm
 import random
+from concurrent.futures import ThreadPoolExecutor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,12 +18,23 @@ def process_and_filter_batch(batch, tokenizer, min_length=None, max_length=None,
     for i in range(0, len(inputs), sub_batch_size):
         input_slice = inputs[i:i+sub_batch_size]
         output_slice = outputs[i:i+sub_batch_size]
-        tokenized = tokenizer(input_slice, truncation=False, add_special_tokens=False)
-        for j, toks in enumerate(tokenized["input_ids"]):
-            length = len(toks)
+
+        with ThreadPoolExecutor() as executor:
+            tokenized_inputs = list(executor.map(lambda s: tokenizer(s, truncation=False, add_special_tokens=False), input_slice))
+            tokenized_outputs = list(executor.map(lambda s: tokenizer(s, truncation=False, add_special_tokens=False), output_slice))
+
+        for j, toks in enumerate(tokenized_inputs):
+            length = len(toks["input_ids"])
             if (min_length and length < min_length) or (max_length and length > max_length):
                 continue
-            filtered.append({"input": input_slice[j], "output": output_slice[j]})
+            out_len = len(tokenized_outputs[j]["input_ids"])
+            if (min_length and out_len < min_length) or (max_length and out_len > max_length):
+                continue
+            filtered.append({
+                "input_ids": toks["input_ids"],
+                "attention_mask": toks["attention_mask"],
+                "labels": tokenized_outputs[j]["input_ids"],
+            })
 
     return filtered
 
