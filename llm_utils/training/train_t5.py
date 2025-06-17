@@ -100,6 +100,9 @@ parser.add_argument(
     help="Maximum target sequence length"
 )
 
+# DeepSpeed argument
+parser.add_argument("--deepspeed", type=str, default=None, help="Path to DeepSpeed config JSON file (enables DeepSpeed training)")
+
 # New CLI arguments for HuggingFace datasets from disk
 parser.add_argument("--train-dataset-dir", type=str, help="Path to a HuggingFace dataset directory for training (saved with save_to_disk())")
 parser.add_argument("--eval-dataset-dir", type=str, help="Optional path to evaluation dataset directory (if not provided, splits train)")
@@ -397,6 +400,7 @@ def main():
         warmup_steps=args_cli.warm_up_steps,
         lr_scheduler_type=args_cli.lr_scheduler_type,
         gradient_accumulation_steps=args_cli.gradient_accumulation_steps,
+        deepspeed=args_cli.deepspeed,
     )
 
     # The run_name variable below is now redundant since it's incorporated above; remove if not used elsewhere.
@@ -405,6 +409,8 @@ def main():
     writer = SummaryWriter(log_dir=args.logging_dir)
 
     logger.info("🏋️ Beginning training loop...")
+    # Enable gradient checkpointing to save memory (especially helpful with DeepSpeed)
+    model.gradient_checkpointing_enable()
     trainer = Seq2SeqTrainer(
         model=model,
         args=args,
