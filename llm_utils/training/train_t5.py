@@ -10,6 +10,15 @@ import logging
 import os
 from datetime import datetime
 from tqdm.auto import tqdm
+
+# Ensure HuggingFace logging enables tqdm/progress bars if possible
+try:
+    from transformers.utils import logging as hf_logging
+    hf_logging.set_verbosity_info()
+    hf_logging.enable_default_handler()
+    hf_logging.enable_explicit_format()
+except ImportError:
+    pass  # If transformers version too old, just skip
 import psutil
 
 from transformers import EarlyStoppingCallback
@@ -381,8 +390,8 @@ def main():
         batched=True,
         num_proc=args_cli.threads,
         remove_columns=["input", "output"],
-        desc="🧠 Tokenizing",
         with_progress_bar=True,
+        desc="🧠 Tokenizing dataset"
     )
     report_memory()
     tokenized_full = tokenized_full.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
