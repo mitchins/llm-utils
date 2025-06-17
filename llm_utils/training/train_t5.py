@@ -128,10 +128,34 @@ def main():
     if args_cli.output_dir is None:
         args_cli.output_dir = f"{args_cli.task_name}_model"
 
+    # STREAMING CSV LOAD AND TOKENIZATION
     if args_cli.data_format == "csv":
-        logger.info(f"📁 Loading data from {args_cli.data_path} using HuggingFace datasets...")
-        dataset = load_dataset("csv", data_files=args_cli.data_path, split="train")
-        logger.info(f"✅ Loaded {len(dataset):,} examples from CSV.")
+        from datasets import load_dataset, Dataset
+        from tqdm import tqdm
+        logger.info(f"📁 Streaming and tokenizing data from {args_cli.data_path}...")
+        raw_iter = load_dataset("csv", data_files=args_cli.data_path, split="train", streaming=True)
+
+        tokenized_samples = []
+        for sample in tqdm(raw_iter, desc="🧠 Tokenizing streamed dataset"):
+            tokenized = tokenizer(
+                sample[args_cli.input_col],
+                max_length=args_cli.max_input_length,
+                padding="max_length",
+                truncation=True,
+            )
+            with tokenizer.as_target_tokenizer():
+                target = tokenizer(
+                    sample[args_cli.target_col],
+                    max_length=args_cli.max_target_length,
+                    padding="max_length",
+                    truncation=True,
+                )
+
+            tokenized["labels"] = target["input_ids"]
+            tokenized_samples.append(tokenized)
+
+        dataset = Dataset.from_list(tokenized_samples)
+        logger.info(f"✅ Tokenized {len(dataset)} examples from stream.")
     else:
         import pandas as pd
         df = pd.read_json(Path(args_cli.data_path), lines=True)
@@ -160,44 +184,17 @@ def main():
     # Set tokenizer max length as specified
     tokenizer.model_max_length = args_cli.max_input_length
 
+    # NOTE: For streaming CSV, dataset has already been tokenized above and is ready.
+    # For JSONL, keep old logic:
     if args_cli.data_format == "csv":
-        # dataset is a HuggingFace Dataset
-        tokenized_lengths = tokenizer(dataset[args_cli.input_col], add_special_tokens=False, return_length=True, truncation=False)
-        input_lengths = tokenized_lengths["length"]
+        # dataset is already tokenized and ready to split
         total_examples = len(dataset)
-        # Filter examples with input length > max_input_length
-        indices_to_keep = [i for i, l in enumerate(input_lengths) if l <= args_cli.max_input_length]
-        dropped_examples = total_examples - len(indices_to_keep)
-        dataset = dataset.select(indices_to_keep)
-        logger.info(f"🧹 Filtered {dropped_examples}/{total_examples} examples due to excessive input length.")
-        # If stratify_length is requested, convert to pandas for binning, then back to Dataset
-        import pandas as pd
-        from datasets import Dataset
-        if args_cli.stratify_length:
-            def strat_length(output):
-                try:
-                    output = str(output).strip()
-                    if output.startswith("{") or output.startswith("["):
-                        parsed = json.loads(output)
-                        return len(parsed) if isinstance(parsed, (list, dict)) else 0
-                    else:
-                        return len(output.split())
-                except Exception:
-                    return 0
-            df = dataset.to_pandas()
-            df["length_bin"] = pd.qcut(df[args_cli.target_col].map(strat_length), q=5, duplicates="drop")
-            val_df = df.groupby("length_bin", group_keys=False).apply(lambda g: g.sample(frac=args_cli.validation_size))
-            train_df = df.drop(val_df.index)
-            train_dataset = Dataset.from_pandas(train_df.drop(columns=["length_bin"]))
-            val_dataset = Dataset.from_pandas(val_df.drop(columns=["length_bin"]))
-        else:
-            total_examples = len(dataset)
-            eval_size = int(total_examples * args_cli.validation_size)
-            train_size = total_examples - eval_size
-            logger.info(f"📊 Total examples: {total_examples}, using {eval_size} for validation set ({(eval_size/total_examples)*100:.2f}%)")
-            split = dataset.train_test_split(test_size=eval_size/total_examples, seed=42)
-            train_dataset = split["train"]
-            val_dataset = split["test"]
+        eval_size = int(total_examples * args_cli.validation_size)
+        train_size = total_examples - eval_size
+        logger.info(f"📊 Total examples: {total_examples}, using {eval_size} for validation set ({(eval_size/total_examples)*100:.2f}%)")
+        split = dataset.train_test_split(test_size=eval_size/total_examples, seed=42)
+        train_dataset = split["train"]
+        val_dataset = split["test"]
     else:
         # original jsonl logic
         tokenized_lengths = tokenizer(df[args_cli.input_col].tolist(), add_special_tokens=False, return_length=True, truncation=False)
@@ -374,28 +371,32 @@ def main():
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
 
-    logger.info("🪄 Starting dataset tokenization...")
-    report_memory()
-    tokenized_full = dataset.map(
-        preprocess_t5,
-        batched=True,
-        num_proc=args_cli.threads,
-        remove_columns=["input", "output"],
-        desc="🧠 Tokenizing",
-        with_progress_bar=True,
-    )
-    report_memory()
-    tokenized_full = tokenized_full.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
-    logger.info(f"✅ Tokenization complete: {len(tokenized_full):,} examples")
-
-    # Then split
-    eval_size = int(len(tokenized_full) * args_cli.validation_size)
-    split = tokenized_full.train_test_split(test_size=eval_size / len(tokenized_full), seed=42)
-    tokenized_train = split["train"]
-    tokenized_val = split["test"]
-
-    tokenized_train.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-    tokenized_val.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+    # For streaming CSV, dataset is already tokenized; for JSONL, tokenize here
+    if args_cli.data_format == "csv":
+        # Already tokenized, just set format
+        train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+        val_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+    else:
+        logger.info("🪄 Starting dataset tokenization...")
+        report_memory()
+        tokenized_full = dataset.map(
+            preprocess_t5,
+            batched=True,
+            num_proc=args_cli.threads,
+            remove_columns=["input", "output"],
+            desc="🧠 Tokenizing",
+            with_progress_bar=True,
+        )
+        report_memory()
+        tokenized_full = tokenized_full.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
+        logger.info(f"✅ Tokenization complete: {len(tokenized_full):,} examples")
+        # Then split
+        eval_size = int(len(tokenized_full) * args_cli.validation_size)
+        split = tokenized_full.train_test_split(test_size=eval_size / len(tokenized_full), seed=42)
+        train_dataset = split["train"]
+        val_dataset = split["test"]
+        train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+        val_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
 
     model_name = args_cli.model_checkpoint.split("/")[-1]
     dataset_name = Path(args_cli.data_path).stem
@@ -455,8 +456,8 @@ def main():
     trainer = Seq2SeqTrainer(
         model=model,
         args=args,
-        train_dataset=tokenized_train,
-        eval_dataset=tokenized_val,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
         tokenizer=tokenizer,
         data_collator=DataCollatorWithPadding(tokenizer),
         callbacks=[
