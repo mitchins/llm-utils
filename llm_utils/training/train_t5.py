@@ -128,6 +128,11 @@ def main():
     if args_cli.output_dir is None:
         args_cli.output_dir = f"{args_cli.task_name}_model"
 
+    # ----------------- TOKENIZER LOAD (must occur before tokenization) -----------------
+    model_checkpoint = args_cli.model_checkpoint
+    logger.info("🔤 Loading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, use_fast=True)
+    logger.info("✅ Tokenizer loaded.")
     # STREAMING CSV LOAD AND TOKENIZATION
     if args_cli.data_format == "csv":
         from datasets import load_dataset, Dataset
@@ -176,10 +181,6 @@ def main():
         raise ValueError(f"❌ Found {num_empty_output} empty output rows in '{args_cli.target_col}'. Use --allow-empty-output to bypass.")
 
     # ----------------- TOKEN LENGTH FILTERING (vectorized, before split) -----------------
-    model_checkpoint = args_cli.model_checkpoint
-    logger.info("🔤 Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-    logger.info("✅ Tokenizer loaded.")
     logger.info("⚙️  Starting tokenization of dataset...")
     # Set tokenizer max length as specified
     tokenizer.model_max_length = args_cli.max_input_length
