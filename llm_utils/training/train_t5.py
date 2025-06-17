@@ -9,6 +9,7 @@ from transformers import DataCollatorWithPadding
 import logging
 import os
 from datetime import datetime
+from tqdm.auto import tqdm
 import psutil
 
 from transformers import EarlyStoppingCallback
@@ -353,9 +354,6 @@ def main():
 
         return metrics
 
-    from tqdm import tqdm
-    import psutil
-
     def report_memory():
         mem = psutil.Process().memory_info().rss / (1024 * 1024)
         logger.info(f"🧠 Current memory usage: {mem:.2f} MB")
@@ -378,17 +376,23 @@ def main():
 
     logger.info("🪄 Starting dataset tokenization...")
     report_memory()
-    tokenized_full = dataset.map(
-        preprocess_t5,
-        desc="Tokenizing",
-        num_proc=args_cli.threads,
-        with_tqdm=True
-    )
-    # Remove 'input' and 'output' columns after tokenization, if present
-    if "input" in tokenized_full.column_names:
-        tokenized_full = tokenized_full.remove_columns(["input"])
-    if "output" in tokenized_full.column_names:
-        tokenized_full = tokenized_full.remove_columns(["output"])
+    # Wrap the tokenization function with a tqdm progress bar
+    with tqdm(total=len(dataset), desc="🧠 Tokenizing") as pbar:
+        def wrapped_tokenize_function(batch):
+            result = preprocess_t5(batch)
+            # batch["input"] may not exist if columns are renamed, fallback to input_col
+            if "input" in batch:
+                pbar.update(len(batch["input"]))
+            else:
+                pbar.update(len(batch[args_cli.input_col]))
+            return result
+
+        tokenized_full = dataset.map(
+            wrapped_tokenize_function,
+            batched=True,
+            num_proc=args_cli.threads,
+            remove_columns=["input", "output"]
+        )
     report_memory()
     tokenized_full = tokenized_full.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
     logger.info(f"✅ Tokenization complete: {len(tokenized_full):,} examples")

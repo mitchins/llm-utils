@@ -1,6 +1,6 @@
 [project]
 name = "llm-utils"
-version = "0.5.9"
+version = "0.5.10"
 description = "Lightweight utilities for LLM data parsing and training"
 authors = [
     { name="Mitchell Currie" }
