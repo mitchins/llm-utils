@@ -135,6 +135,19 @@ def main():
     if num_empty_output > 0 and not args_cli.allow_empty_output:
         raise ValueError(f"❌ Found {num_empty_output} empty output rows in '{args_cli.target_col}'. Use --allow-empty-output to bypass.")
 
+    # ----------------- TOKEN LENGTH FILTERING (vectorized, before split) -----------------
+    model_checkpoint = args_cli.model_checkpoint
+    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+    # Set tokenizer max length as specified
+    tokenizer.model_max_length = args_cli.max_input_length
+
+    tokenized_lengths = tokenizer(df[args_cli.input_col].tolist(), add_special_tokens=False, return_length=True, truncation=False)
+    df["input_length"] = tokenized_lengths["length"]
+    total_examples = len(df)
+    df = df[df["input_length"] <= args_cli.max_input_length].copy()
+    dropped_examples = total_examples - len(df)
+    logger.info(f"🧹 Filtered {dropped_examples}/{total_examples} examples due to excessive input length.")
+
     if args_cli.stratify_length:
         def strat_length(output):
             try:
@@ -150,10 +163,10 @@ def main():
         df["length_bin"] = pd.qcut(df[args_cli.target_col].map(strat_length), q=5, duplicates="drop")
         val_df = df.groupby("length_bin", group_keys=False).apply(lambda g: g.sample(frac=args_cli.validation_size))
         train_df = df.drop(val_df.index)
-        train_dataset = Dataset.from_pandas(train_df.drop(columns=["length_bin"]))
-        val_dataset = Dataset.from_pandas(val_df.drop(columns=["length_bin"]))
+        train_dataset = Dataset.from_pandas(train_df.drop(columns=["length_bin", "input_length"]))
+        val_dataset = Dataset.from_pandas(val_df.drop(columns=["length_bin", "input_length"]))
     else:
-        dataset = Dataset.from_pandas(df)
+        dataset = Dataset.from_pandas(df.drop(columns=["input_length"]))
         total_examples = len(dataset)
         eval_size = int(total_examples * args_cli.validation_size)
         train_size = total_examples - eval_size
@@ -162,32 +175,9 @@ def main():
         train_dataset = split["train"]
         val_dataset = split["test"]
 
-    model_checkpoint = args_cli.model_checkpoint
-
-    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-    # Set tokenizer max length as specified
-    tokenizer.model_max_length = args_cli.max_input_length
-
     # Warn if user requests a long context but model is not a known long-context model
     if args_cli.max_input_length > 2048 and not any(s in model_checkpoint.lower() for s in ["longt5", "long-t5", "tglobal"]):
         logger.warning(f"⚠️ Specified max_input_length={args_cli.max_input_length} but model '{model_checkpoint}' may not support long contexts. Proceed with caution.")
-
-    overflow_counter = {"count": 0}
-
-    def tokenize_fn(example):
-        global total_examples, dropped_examples
-        total_examples += 1
-        tokenized_input = tokenizer.encode(example[args_cli.input_col], add_special_tokens=False)
-        if len(tokenized_input) > args_cli.max_input_length:
-            dropped_examples += 1
-            return None  # Drop this example
-        encoding = tokenizer(example[args_cli.input_col], truncation=True, max_length=args_cli.max_input_length)
-        return encoding
-
-    tokenized_train = train_dataset.map(tokenize_fn, batched=False, remove_columns=train_dataset.column_names)
-    tokenized_train = tokenized_train.filter(lambda x: x is not None)
-    tokenized_val = val_dataset.map(tokenize_fn, batched=False, remove_columns=val_dataset.column_names)
-    tokenized_val = tokenized_val.filter(lambda x: x is not None)
 
     # Prepare model
     model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
@@ -305,8 +295,20 @@ def main():
         return metrics
 
     def preprocess_t5(example):
-        example["labels"] = tokenizer(example[args_cli.target_col], truncation=True, padding="max_length", max_length=args_cli.max_target_length).input_ids
-        return example
+        model_inputs = tokenizer(
+            example[args_cli.input_col],
+            truncation=True,
+            padding="max_length",
+            max_length=args_cli.max_input_length
+        )
+        labels = tokenizer(
+            example[args_cli.target_col],
+            truncation=True,
+            padding="max_length",
+            max_length=args_cli.max_target_length
+        )
+        model_inputs["labels"] = labels["input_ids"]
+        return model_inputs
 
     # Only map preprocess_t5 to add labels, do not re-tokenize text
     tokenized_train = tokenized_train.map(preprocess_t5)
@@ -391,8 +393,7 @@ def main():
 
     writer.close()
 
-    # Log how many examples were filtered due to excessive input length
-    logger.info(f"🧹 Filtered {dropped_examples}/{total_examples} examples due to excessive input length.")
+    # (Filtering log now occurs before split)
 
     # Save final model to versioned path
     logger.info(f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
