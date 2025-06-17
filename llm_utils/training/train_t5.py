@@ -160,6 +160,10 @@ def main():
         train_dataset = split["train"]
         val_dataset = split["test"]
 
+    # Check if dataset is already tokenized
+    is_tokenized = all(
+        col in train_dataset.column_names for col in ["input_ids", "attention_mask"]
+    )
     # Sanity check: no empty input or output rows
     if not is_tokenized:
         num_empty_input = sum([str(x).strip() == "" for x in train_dataset[args_cli.input_col]])
@@ -315,10 +319,6 @@ def main():
     # Tokenize train and val splits after splitting
     logger.info("🪄 Starting dataset tokenization...")
     report_memory()
-    # Check if dataset is already tokenized
-    is_tokenized = all(
-        col in train_dataset.column_names for col in ["input_ids", "attention_mask"]
-    )
     if not is_tokenized:
         logger.info("🔄 Dataset not yet tokenized — applying preprocessing...")
         train_dataset = train_dataset.map(
