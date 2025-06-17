@@ -174,7 +174,6 @@ def main():
         logger.info(f"🧹 Filtered {dropped_examples}/{total_examples} examples due to excessive input length.")
         # If stratify_length is requested, convert to pandas for binning, then back to Dataset
         if args_cli.stratify_length:
-            import pandas as pd
             def strat_length(output):
                 try:
                     output = str(output).strip()
