@@ -1,7 +1,7 @@
 import json
 import argparse
 from pathlib import Path
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 import evaluate
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, Seq2SeqTrainer, Seq2SeqTrainingArguments
 from transformers import AutoConfig
@@ -40,14 +40,6 @@ parser.add_argument(
 parser.add_argument("--clean", action="store_true", help="Remove output_dir before training if it exists")
 parser.add_argument("--total-epochs", type=int, default=30, help="Total number of training epochs (default: 30)")
 parser.add_argument("--model-checkpoint", type=str, default="t5-small", help="HuggingFace model checkpoint to use")
-parser.add_argument(
-    "--data-path", type=str, required=True,
-    help="Path to training data file (JSONL or CSV)"
-)
-parser.add_argument(
-    "--data-format", type=str, choices=["jsonl","csv"], default=None,
-    help="Explicit data format; if not set, auto-detected from file extension"
-)
 parser.add_argument("--no-fp16", action="store_true", help="Disable mixed precision (FP16) training (enabled by default for RTX 3000/4000 cards)")
 parser.add_argument("--warm-up-steps", type=int, default=500, help="Number of warm-up steps for learning rate scheduler (set 0 for no warm-up)")
 parser.add_argument(
@@ -102,6 +94,10 @@ parser.add_argument(
     help="Maximum target sequence length"
 )
 
+# New CLI arguments for HuggingFace datasets from disk
+parser.add_argument("--train-dataset-dir", type=str, help="Path to a HuggingFace dataset directory for training (saved with save_to_disk())")
+parser.add_argument("--eval-dataset-dir", type=str, help="Optional path to evaluation dataset directory (if not provided, splits train)")
+
 def main():
     args_cli = parser.parse_args()
 
@@ -110,20 +106,10 @@ def main():
     logger = logging.getLogger(__name__)
     logger.info("🚦 Process start: initializing training script.")
     logger.info("🚀 Starting T5 training script...")
-    logger.info(f"📁 Loading data from {args_cli.data_path} ({args_cli.data_format})")
+    if not args_cli.train_dataset_dir:
+        parser.error("You must provide --train-dataset-dir.")
     logger.info(f"🧠 Using model checkpoint: {args_cli.model_checkpoint}")
     logger.info("🧮 Initializing dataset preprocessing and tokenization pipeline...")
-
-    # Auto-detect data format if not specified
-    from pathlib import Path as _Path
-    if args_cli.data_format is None:
-        ext = _Path(args_cli.data_path).suffix.lower()
-        if ext == ".csv":
-            args_cli.data_format = "csv"
-        elif ext in [".jsonl", ".json"]:
-            args_cli.data_format = "jsonl"
-        else:
-            raise ValueError(f"Unknown data format for file extension '{ext}'")
 
     if args_cli.output_dir is None:
         args_cli.output_dir = f"{args_cli.task_name}_model"
@@ -133,103 +119,54 @@ def main():
     logger.info("🔤 Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, use_fast=True)
     logger.info("✅ Tokenizer loaded.")
-    # STREAMING CSV LOAD AND TOKENIZATION
-    if args_cli.data_format == "csv":
-        from datasets import load_dataset, Dataset
-        from tqdm import tqdm
-        logger.info(f"📁 Streaming and tokenizing data from {args_cli.data_path}...")
-        raw_iter = load_dataset("csv", data_files=args_cli.data_path, split="train", streaming=True)
 
-        tokenized_samples = []
-        for sample in tqdm(raw_iter, desc="🧠 Tokenizing streamed dataset"):
-            tokenized = tokenizer(
-                sample[args_cli.input_col],
-                max_length=args_cli.max_input_length,
-                padding="max_length",
-                truncation=True,
-            )
-            with tokenizer.as_target_tokenizer():
-                target = tokenizer(
-                    sample[args_cli.target_col],
-                    max_length=args_cli.max_target_length,
-                    padding="max_length",
-                    truncation=True,
-                )
-
-            tokenized["labels"] = target["input_ids"]
-            tokenized_samples.append(tokenized)
-
-        dataset = Dataset.from_list(tokenized_samples)
-        logger.info(f"✅ Tokenized {len(dataset)} examples from stream.")
-    else:
+    # Only load from disk (HuggingFace datasets), or from CSV/JSON if specified
+    from pathlib import Path
+    train_path = Path(args_cli.train_dataset_dir)
+    if train_path.suffix == ".csv":
         import pandas as pd
-        df = pd.read_json(Path(args_cli.data_path), lines=True)
-
-    # Sanity check: no empty input or output rows
-    if args_cli.data_format == "csv":
-        # dataset is a HuggingFace Dataset
-        num_empty_input = sum([str(x).strip() == "" for x in dataset[args_cli.input_col]])
-        num_empty_output = sum([str(x).strip() == "" for x in dataset[args_cli.target_col]])
+        logger.info("📄 Detected CSV format for training dataset.")
+        df = pd.read_csv(train_path)
+        train_dataset = Dataset.from_pandas(df)
+    elif train_path.suffix == ".json":
+        import pandas as pd
+        logger.info("📄 Detected JSON format for training dataset.")
+        df = pd.read_json(train_path)
+        train_dataset = Dataset.from_pandas(df)
     else:
-        num_empty_input = (df[args_cli.input_col].astype(str).str.strip() == "").sum()
-        num_empty_output = (df[args_cli.target_col].astype(str).str.strip() == "").sum()
+        logger.info("📂 Loading HuggingFace dataset from disk...")
+        train_dataset = Dataset.load_from_disk(args_cli.train_dataset_dir)
 
-    if num_empty_input > 0:
-        raise ValueError(f"❌ Found {num_empty_input} empty input rows in '{args_cli.input_col}' — these must be removed or filled.")
-
-    if num_empty_output > 0 and not args_cli.allow_empty_output:
-        raise ValueError(f"❌ Found {num_empty_output} empty output rows in '{args_cli.target_col}'. Use --allow-empty-output to bypass.")
-
-    # ----------------- TOKEN LENGTH FILTERING (vectorized, before split) -----------------
-    logger.info("⚙️  Starting tokenization of dataset...")
-    # Set tokenizer max length as specified
-    tokenizer.model_max_length = args_cli.max_input_length
-
-    # NOTE: For streaming CSV, dataset has already been tokenized above and is ready.
-    # For JSONL, keep old logic:
-    if args_cli.data_format == "csv":
-        # dataset is already tokenized and ready to split
-        total_examples = len(dataset)
+    if args_cli.eval_dataset_dir:
+        eval_path = Path(args_cli.eval_dataset_dir)
+        if eval_path.suffix == ".csv":
+            import pandas as pd
+            logger.info("📄 Detected CSV format for evaluation dataset.")
+            df = pd.read_csv(eval_path)
+            val_dataset = Dataset.from_pandas(df)
+        elif eval_path.suffix == ".json":
+            import pandas as pd
+            logger.info("📄 Detected JSON format for evaluation dataset.")
+            df = pd.read_json(eval_path)
+            val_dataset = Dataset.from_pandas(df)
+        else:
+            val_dataset = Dataset.load_from_disk(args_cli.eval_dataset_dir)
+        logger.info(f"✅ Loaded train ({len(train_dataset)}), eval ({len(val_dataset)}) from disk or file.")
+    else:
+        total_examples = len(train_dataset)
         eval_size = int(total_examples * args_cli.validation_size)
-        train_size = total_examples - eval_size
-        logger.info(f"📊 Total examples: {total_examples}, using {eval_size} for validation set ({(eval_size/total_examples)*100:.2f}%)")
-        split = dataset.train_test_split(test_size=eval_size/total_examples, seed=42)
+        logger.info(f"📊 Splitting train into train/val: total {total_examples}, val size {eval_size} ({(eval_size/total_examples)*100:.2f}%)")
+        split = train_dataset.train_test_split(test_size=eval_size/total_examples, seed=42)
         train_dataset = split["train"]
         val_dataset = split["test"]
-    else:
-        # original jsonl logic
-        tokenized_lengths = tokenizer(df[args_cli.input_col].tolist(), add_special_tokens=False, return_length=True, truncation=False)
-        df["input_length"] = tokenized_lengths["length"]
-        total_examples = len(df)
-        df = df[df["input_length"] <= args_cli.max_input_length].copy()
-        dropped_examples = total_examples - len(df)
-        logger.info(f"🧹 Filtered {dropped_examples}/{total_examples} examples due to excessive input length.")
-        if args_cli.stratify_length:
-            def strat_length(output):
-                try:
-                    output = output.strip()
-                    if output.startswith("{") or output.startswith("["):
-                        parsed = json.loads(output)
-                        return len(parsed) if isinstance(parsed, (list, dict)) else 0
-                    else:
-                        return len(output.split())
-                except Exception:
-                    return 0
 
-            df["length_bin"] = pd.qcut(df[args_cli.target_col].map(strat_length), q=5, duplicates="drop")
-            val_df = df.groupby("length_bin", group_keys=False).apply(lambda g: g.sample(frac=args_cli.validation_size))
-            train_df = df.drop(val_df.index)
-            train_dataset = Dataset.from_pandas(train_df.drop(columns=["length_bin", "input_length"]))
-            val_dataset = Dataset.from_pandas(val_df.drop(columns=["length_bin", "input_length"]))
-        else:
-            dataset = Dataset.from_pandas(df.drop(columns=["input_length"]))
-            total_examples = len(dataset)
-            eval_size = int(total_examples * args_cli.validation_size)
-            train_size = total_examples - eval_size
-            logger.info(f"📊 Total examples: {total_examples}, using {eval_size} for validation set ({(eval_size/total_examples)*100:.2f}%)")
-            split = dataset.train_test_split(test_size=eval_size/total_examples, seed=42)
-            train_dataset = split["train"]
-            val_dataset = split["test"]
+    # Sanity check: no empty input or output rows
+    num_empty_input = sum([str(x).strip() == "" for x in train_dataset[args_cli.input_col]])
+    num_empty_output = sum([str(x).strip() == "" for x in train_dataset[args_cli.target_col]])
+    if num_empty_input > 0:
+        raise ValueError(f"❌ Found {num_empty_input} empty input rows in '{args_cli.input_col}' — these must be removed or filled.")
+    if num_empty_output > 0 and not args_cli.allow_empty_output:
+        raise ValueError(f"❌ Found {num_empty_output} empty output rows in '{args_cli.target_col}'. Use --allow-empty-output to bypass.")
 
     # Warn if user requests a long context but model is not a known long-context model
     if args_cli.max_input_length > 2048 and not any(s in model_checkpoint.lower() for s in ["longt5", "long-t5", "tglobal"]):
@@ -372,35 +309,35 @@ def main():
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
 
-    # For streaming CSV, dataset is already tokenized; for JSONL, tokenize here
-    if args_cli.data_format == "csv":
-        # Already tokenized, just set format
-        train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-        val_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-    else:
-        logger.info("🪄 Starting dataset tokenization...")
-        report_memory()
-        tokenized_full = dataset.map(
-            preprocess_t5,
-            batched=True,
-            num_proc=args_cli.threads,
-            remove_columns=["input", "output"],
-            desc="🧠 Tokenizing",
-            with_progress_bar=True,
-        )
-        report_memory()
-        tokenized_full = tokenized_full.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
-        logger.info(f"✅ Tokenization complete: {len(tokenized_full):,} examples")
-        # Then split
-        eval_size = int(len(tokenized_full) * args_cli.validation_size)
-        split = tokenized_full.train_test_split(test_size=eval_size / len(tokenized_full), seed=42)
-        train_dataset = split["train"]
-        val_dataset = split["test"]
-        train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-        val_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+    # Tokenize train and val splits after splitting
+    logger.info("🪄 Starting dataset tokenization...")
+    report_memory()
+    train_dataset = train_dataset.map(
+        preprocess_t5,
+        batched=True,
+        num_proc=args_cli.threads,
+        remove_columns=[args_cli.input_col, args_cli.target_col],
+        desc="🧠 Tokenizing train",
+        with_progress_bar=True,
+    )
+    val_dataset = val_dataset.map(
+        preprocess_t5,
+        batched=True,
+        num_proc=args_cli.threads,
+        remove_columns=[args_cli.input_col, args_cli.target_col],
+        desc="🧠 Tokenizing val",
+        with_progress_bar=True,
+    )
+    report_memory()
+    # Filter by input length
+    train_dataset = train_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
+    val_dataset = val_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
+    logger.info(f"✅ Tokenization complete: train {len(train_dataset):,} examples, val {len(val_dataset):,} examples")
+    train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+    val_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
 
     model_name = args_cli.model_checkpoint.split("/")[-1]
-    dataset_name = Path(args_cli.data_path).stem
+    dataset_name = Path(args_cli.train_dataset_dir).stem
 
     # Determine batch size: user override or auto-scaled
     if args_cli.batch_size is not None:
@@ -410,15 +347,13 @@ def main():
     logger.info(f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
 
     # Estimate dynamic evaluation steps: prefer 1/3 epoch, clamp at 10k or 1 epoch
-    steps_per_epoch = len(tokenized_train) // base_batch_size
-
+    steps_per_epoch = len(train_dataset) // base_batch_size
     # Prefer evaluating every 1/3 of an epoch, but clamp properly
     third_epoch_steps = steps_per_epoch // 3
     if third_epoch_steps >= 10000:
         dynamic_eval_steps = third_epoch_steps
     else:
         dynamic_eval_steps = min(steps_per_epoch, 10000)
-
     print(f"🔢 Dynamically setting eval/save every {dynamic_eval_steps} steps (⅓ epoch preferred, clamped at 10k or 1 epoch).")
 
     if args_cli.fields:
