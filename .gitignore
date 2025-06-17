@@ -193,3 +193,5 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 .t5_repl_history
+*_model/
+**/events.out.tfevents.*
