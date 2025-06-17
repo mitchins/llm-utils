@@ -18,6 +18,10 @@ from .utils import load_and_filter_dataframe, determine_batch_size
 from torch.utils.tensorboard import SummaryWriter
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# Global counters for input length filtering
+total_examples = 0
+dropped_examples = 0
+
 parser = argparse.ArgumentParser(
     description="Generic seq2seq trainer for tasks like summarization, translation, paraphrasing"
 )
@@ -165,23 +169,25 @@ def main():
     tokenizer.model_max_length = args_cli.max_input_length
 
     # Warn if user requests a long context but model is not a known long-context model
-    if args_cli.max_input_length > 2048 and "longt5" not in model_checkpoint.lower():
+    if args_cli.max_input_length > 2048 and not any(s in model_checkpoint.lower() for s in ["longt5", "long-t5", "tglobal"]):
         logger.warning(f"⚠️ Specified max_input_length={args_cli.max_input_length} but model '{model_checkpoint}' may not support long contexts. Proceed with caution.")
 
     overflow_counter = {"count": 0}
 
     def tokenize_fn(example):
+        global total_examples, dropped_examples
+        total_examples += 1
+        tokenized_input = tokenizer.encode(example[args_cli.input_col], add_special_tokens=False)
+        if len(tokenized_input) > args_cli.max_input_length:
+            dropped_examples += 1
+            return None  # Drop this example
         encoding = tokenizer(example[args_cli.input_col], truncation=True, max_length=args_cli.max_input_length)
-        # Count how often original tokenized input exceeds the max length
-        if len(tokenizer(example[args_cli.input_col]).input_ids) > args_cli.max_input_length:
-            overflow_counter["count"] += 1
         return encoding
 
-    tokenized_train = train_dataset.map(tokenize_fn, batched=True)
-    tokenized_val = val_dataset.map(tokenize_fn, batched=True)
-
-    if overflow_counter["count"] > 0:
-        logger.warning(f"⚠️ {overflow_counter['count']} examples exceeded max_input_length={args_cli.max_input_length} and were truncated.")
+    tokenized_train = train_dataset.map(tokenize_fn, batched=False, remove_columns=train_dataset.column_names)
+    tokenized_train = tokenized_train.filter(lambda x: x is not None)
+    tokenized_val = val_dataset.map(tokenize_fn, batched=False, remove_columns=val_dataset.column_names)
+    tokenized_val = tokenized_val.filter(lambda x: x is not None)
 
     # Prepare model
     model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
@@ -384,6 +390,9 @@ def main():
     trainer.train()
 
     writer.close()
+
+    # Log how many examples were filtered due to excessive input length
+    logger.info(f"🧹 Filtered {dropped_examples}/{total_examples} examples due to excessive input length.")
 
     # Save final model to versioned path
     logger.info(f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
