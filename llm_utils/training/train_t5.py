@@ -159,6 +159,7 @@ def main():
     logger.info("🔤 Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
     logger.info("✅ Tokenizer loaded.")
+    logger.info("⚙️  Starting tokenization of dataset...")
     # Set tokenizer max length as specified
     tokenizer.model_max_length = args_cli.max_input_length
 
@@ -354,6 +355,13 @@ def main():
 
         return metrics
 
+    from tqdm import tqdm
+    import psutil
+
+    def report_memory():
+        mem = psutil.Process().memory_info().rss / (1024 * 1024)
+        logger.info(f"🧠 Current memory usage: {mem:.2f} MB")
+
     def preprocess_t5(example):
         model_inputs = tokenizer(
             example[args_cli.input_col],
@@ -371,18 +379,15 @@ def main():
         return model_inputs
 
     logger.info("🪄 Starting dataset tokenization...")
-    # --- Memory usage before tokenization ---
-    process = psutil.Process(os.getpid())
-    logger.info(f"🧠 Memory usage before tokenization: {process.memory_info().rss / (1024 * 1024):.2f} MB")
-    # Tokenize the full dataset, filter overlength, then split
+    report_memory()
     tokenized_full = dataset.map(
         preprocess_t5,
-        desc="🔄 Tokenizing full dataset",
+        desc="Tokenizing",
         num_proc=args_cli.threads,
         with_tqdm=True
     )
+    report_memory()
     tokenized_full = tokenized_full.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
-    logger.info(f"🧠 Memory usage after tokenization: {process.memory_info().rss / (1024 * 1024):.2f} MB")
     logger.info(f"✅ Tokenization complete: {len(tokenized_full):,} examples")
 
     # Then split
