@@ -312,22 +312,28 @@ def main():
     # Tokenize train and val splits after splitting
     logger.info("🪄 Starting dataset tokenization...")
     report_memory()
-    train_dataset = train_dataset.map(
-        preprocess_t5,
-        batched=True,
-        num_proc=args_cli.threads,
-        remove_columns=[args_cli.input_col, args_cli.target_col],
-        desc="🧠 Tokenizing train",
-        with_progress_bar=True,
+    # Check if dataset is already tokenized
+    is_tokenized = all(
+        col in train_dataset.column_names for col in ["input_ids", "attention_mask"]
     )
-    val_dataset = val_dataset.map(
-        preprocess_t5,
-        batched=True,
-        num_proc=args_cli.threads,
-        remove_columns=[args_cli.input_col, args_cli.target_col],
-        desc="🧠 Tokenizing val",
-        with_progress_bar=True,
-    )
+    if not is_tokenized:
+        logger.info("🔄 Dataset not yet tokenized — applying preprocessing...")
+        train_dataset = train_dataset.map(
+            preprocess_t5,
+            batched=True,
+            num_proc=args_cli.threads,
+            remove_columns=[args_cli.input_col, args_cli.target_col],
+            desc="🧠 Tokenizing train set",
+        )
+        val_dataset = val_dataset.map(
+            preprocess_t5,
+            batched=True,
+            num_proc=args_cli.threads,
+            remove_columns=[args_cli.input_col, args_cli.target_col],
+            desc="🧠 Tokenizing val set",
+        )
+    else:
+        logger.info("⚡ Detected pre-tokenized dataset — skipping tokenization.")
     report_memory()
     # Filter by input length
     train_dataset = train_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
