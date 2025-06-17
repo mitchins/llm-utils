@@ -310,9 +310,15 @@ def main():
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
 
-    # Only map preprocess_t5 to add labels, do not re-tokenize text
-    tokenized_train = tokenized_train.map(preprocess_t5)
-    tokenized_val = tokenized_val.map(preprocess_t5)
+    # Tokenize the full dataset, filter overlength, then split
+    tokenized_full = dataset.map(preprocess_t5, desc="🔄 Tokenizing full dataset")
+    tokenized_full = tokenized_full.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
+
+    # Then split
+    eval_size = int(len(tokenized_full) * args_cli.validation_size)
+    split = tokenized_full.train_test_split(test_size=eval_size / len(tokenized_full), seed=42)
+    tokenized_train = split["train"]
+    tokenized_val = split["test"]
 
     tokenized_train.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
     tokenized_val.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
