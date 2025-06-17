@@ -376,23 +376,14 @@ def main():
 
     logger.info("🪄 Starting dataset tokenization...")
     report_memory()
-    # Wrap the tokenization function with a tqdm progress bar
-    with tqdm(total=len(dataset), desc="🧠 Tokenizing") as pbar:
-        def wrapped_tokenize_function(batch):
-            result = preprocess_t5(batch)
-            # batch["input"] may not exist if columns are renamed, fallback to input_col
-            if "input" in batch:
-                pbar.update(len(batch["input"]))
-            else:
-                pbar.update(len(batch[args_cli.input_col]))
-            return result
-
-        tokenized_full = dataset.map(
-            wrapped_tokenize_function,
-            batched=True,
-            num_proc=args_cli.threads,
-            remove_columns=["input", "output"]
-        )
+    tokenized_full = dataset.map(
+        preprocess_t5,
+        batched=True,
+        num_proc=args_cli.threads,
+        remove_columns=["input", "output"],
+        desc="🧠 Tokenizing",
+        with_progress_bar=True,
+    )
     report_memory()
     tokenized_full = tokenized_full.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
     logger.info(f"✅ Tokenization complete: {len(tokenized_full):,} examples")
