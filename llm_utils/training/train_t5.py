@@ -161,12 +161,15 @@ def main():
         val_dataset = split["test"]
 
     # Sanity check: no empty input or output rows
-    num_empty_input = sum([str(x).strip() == "" for x in train_dataset[args_cli.input_col]])
-    num_empty_output = sum([str(x).strip() == "" for x in train_dataset[args_cli.target_col]])
-    if num_empty_input > 0:
-        raise ValueError(f"❌ Found {num_empty_input} empty input rows in '{args_cli.input_col}' — these must be removed or filled.")
-    if num_empty_output > 0 and not args_cli.allow_empty_output:
-        raise ValueError(f"❌ Found {num_empty_output} empty output rows in '{args_cli.target_col}'. Use --allow-empty-output to bypass.")
+    if not is_tokenized:
+        num_empty_input = sum([str(x).strip() == "" for x in train_dataset[args_cli.input_col]])
+        num_empty_output = sum([str(x).strip() == "" for x in train_dataset[args_cli.target_col]])
+        if num_empty_input > 0:
+            raise ValueError(f"❌ Found {num_empty_input} empty input rows in '{args_cli.input_col}' — these must be removed or filled.")
+        if num_empty_output > 0 and not args_cli.allow_empty_output:
+            raise ValueError(f"❌ Found {num_empty_output} empty output rows in '{args_cli.target_col}'. Use --allow-empty-output to bypass.")
+    else:
+        logger.info("⚡ Dataset is pre-tokenized — skipping empty input/output validation.")
 
     # Warn if user requests a long context but model is not a known long-context model
     if args_cli.max_input_length > 2048 and not any(s in model_checkpoint.lower() for s in ["longt5", "long-t5", "tglobal"]):
