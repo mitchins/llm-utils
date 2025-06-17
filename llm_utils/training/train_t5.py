@@ -1,8 +1,7 @@
 import json
 import argparse
 from pathlib import Path
-import pandas as pd
-from datasets import Dataset
+from datasets import load_dataset
 import evaluate
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, Seq2SeqTrainer, Seq2SeqTrainingArguments
 from transformers import AutoConfig
@@ -129,20 +128,11 @@ def main():
         args_cli.output_dir = f"{args_cli.task_name}_model"
 
     if args_cli.data_format == "csv":
-        from datasets import concatenate_datasets, Dataset
-        hf_datasets = []
-        for chunk in pd.read_csv(Path(args_cli.data_path), chunksize=10_000):
-            chunk = chunk[chunk[args_cli.input_col].astype(str).str.strip() != ""]
-            if not args_cli.allow_empty_output:
-                chunk = chunk[chunk[args_cli.target_col].astype(str).str.strip() != ""]
-            # Convert chunk to HF dataset
-            chunk_dataset = Dataset.from_pandas(chunk, preserve_index=False)
-            # Tokenize the chunk (if you tokenize here, drop input/output columns)
-            # If not, just append as before
-            hf_datasets.append(chunk_dataset)
-        dataset = concatenate_datasets(hf_datasets)
-        logger.info(f"📊 Loaded {len(dataset):,} examples from CSV using chunked streaming load")
+        logger.info(f"📁 Loading data from {args_cli.data_path} using HuggingFace datasets...")
+        dataset = load_dataset("csv", data_files=args_cli.data_path, split="train")
+        logger.info(f"✅ Loaded {len(dataset):,} examples from CSV.")
     else:
+        import pandas as pd
         df = pd.read_json(Path(args_cli.data_path), lines=True)
 
     # Sanity check: no empty input or output rows
@@ -180,6 +170,8 @@ def main():
         dataset = dataset.select(indices_to_keep)
         logger.info(f"🧹 Filtered {dropped_examples}/{total_examples} examples due to excessive input length.")
         # If stratify_length is requested, convert to pandas for binning, then back to Dataset
+        import pandas as pd
+        from datasets import Dataset
         if args_cli.stratify_length:
             def strat_length(output):
                 try:
