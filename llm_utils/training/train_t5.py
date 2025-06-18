@@ -46,7 +46,7 @@ parser.add_argument(
 parser.add_argument("--clean", action="store_true", help="Remove output_dir before training if it exists")
 parser.add_argument("--total-epochs", type=int, default=30, help="Total number of training epochs (default: 30)")
 parser.add_argument("--model-checkpoint", type=str, default="t5-small", help="HuggingFace model checkpoint to use")
-parser.add_argument("--no-fp16", action="store_true", help="Disable mixed precision (FP16) training (enabled by default for RTX 3000/4000 cards)")
+parser.add_argument("--enable-fp16", action="store_true", help="Enable mixed precision (FP16) training (default: FP32/full precision)")
 parser.add_argument("--warm-up-steps", type=int, default=500, help="Number of warm-up steps for learning rate scheduler (set 0 for no warm-up)")
 parser.add_argument(
     "--learning-rate", type=float, default=5e-5,
@@ -395,7 +395,7 @@ def main():
         metric_for_best_model="combined" if args_cli.calculate_meteor else "rougeL",
         greater_is_better=True,
         predict_with_generate=True,
-        fp16=not args_cli.no_fp16,
+        fp16=args_cli.enable_fp16,
         learning_rate=args_cli.learning_rate,
         warmup_steps=args_cli.warm_up_steps,
         lr_scheduler_type=args_cli.lr_scheduler_type,
