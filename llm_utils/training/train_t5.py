@@ -406,18 +406,19 @@ def main():
     # The run_name variable below is now redundant since it's incorporated above; remove if not used elsewhere.
     # run_name = f"{model_name}-{dataset_name}-bs{base_batch_size}-lr{args.learning_rate}-ws{args.warmup_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
-    writer = SummaryWriter(log_dir=args.logging_dir)
+    writer = SummaryWriter(log_dir=str(args.logging_dir))
 
     logger.info("🏋️ Beginning training loop...")
     # Enable gradient checkpointing to save memory (especially helpful with DeepSpeed)
     model.gradient_checkpointing_enable()
+    from transformers import DataCollatorForSeq2Seq
     trainer = Seq2SeqTrainer(
         model=model,
         args=args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
-        data_collator=DataCollatorWithPadding(tokenizer),
+        data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
         callbacks=[
             EarlyStoppingCallback(
                 early_stopping_patience=args_cli.early_stopping_patience,
@@ -426,7 +427,7 @@ def main():
             EpochNormalizedLogger(writer),
             MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512)
         ],
-        compute_metrics=compute_metrics,
+        compute_metrics=compute_metrics if int(os.environ.get("RANK", "0")) == 0 else None,
     )
 
     trainer.train()
