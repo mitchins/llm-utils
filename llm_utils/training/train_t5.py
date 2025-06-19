@@ -430,6 +430,8 @@ def main():
         gradient_accumulation_steps=args_cli.gradient_accumulation_steps,
         deepspeed=args_cli.deepspeed,
         optim=optim_type,
+        generation_max_length=min(args_cli.max_target_length, 256),
+        generation_num_beams=1
     )
 
     # The run_name variable below is now redundant since it's incorporated above; remove if not used elsewhere.
