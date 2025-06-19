@@ -282,6 +282,9 @@ def main():
     import sys
 
     def compute_metrics(eval_preds):
+        from transformers.trainer_utils import is_main_process
+        if not is_main_process():
+            return {}
         preds, labels = eval_preds
 
         # Ensure tensors are moved to CPU and converted to numpy
@@ -295,7 +298,7 @@ def main():
             preds = np.argmax(preds, axis=-1)
 
         # Replace label -100s with pad token for decoding
-        labels = np.where(labels != -100, tokenizer.pad_token_id)
+        labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
 
         decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
         decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
