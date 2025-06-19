@@ -285,41 +285,37 @@ def main():
         import numpy as np
         import nltk
 
-        # Handle EvalPrediction object safely
+        # Unpack predictions safely from EvalPrediction
         try:
-            predictions = eval_preds.predictions
+            preds = eval_preds.predictions
             labels = eval_preds.label_ids
         except AttributeError:
-            predictions, labels = eval_preds
+            preds, labels = eval_preds
 
-        # Handle case where predictions are logits
-        if predictions.ndim == 3:
-            # [batch, seq_len, vocab] → argmax over vocab
-            predictions = np.argmax(predictions, axis=-1)
+        # If predictions are logits, convert to token IDs
+        if preds.ndim == 3:
+            preds = np.argmax(preds, axis=-1)
 
-        # Replace ignored index with pad token
+        # Replace ignored label indices with pad_token_id for decoding
         labels = np.where(labels != -100, tokenizer.pad_token_id, labels)
 
-        # Decode predictions and labels
-        decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+        # Decode into strings
+        decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
         decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 
-        # Normalize for ROUGE/METEOR: newline after each sentence
+        # HF: rougeLSum expects \n between sentences
         decoded_preds = ["\n".join(nltk.sent_tokenize(pred.strip())) for pred in decoded_preds]
         decoded_labels = ["\n".join(nltk.sent_tokenize(label.strip())) for label in decoded_labels]
 
-        # Compute metrics — you can switch here
+        # Compute metric
         if args_cli.metric == "meteor":
             result = meteor_metric.compute(predictions=decoded_preds, references=decoded_labels)
-        else:  # Default to ROUGE
-            result = rouge_metric.compute(
-                predictions=decoded_preds,
-                references=decoded_labels,
-                use_stemmer=True,
-            )
+        else:  # default to ROUGE
+            result = rouge_metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
 
-        # Optional: round and label keys
+        # Optional rounding to improve readability
         result = {k: round(v * 100, 2) if isinstance(v, float) else v for k, v in result.items()}
+
         return result
 
     def report_memory():
