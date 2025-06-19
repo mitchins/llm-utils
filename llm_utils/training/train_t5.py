@@ -382,8 +382,8 @@ def main():
     train_dataset = train_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
     val_dataset = val_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
     logger.info(f"✅ Tokenization complete: train {len(train_dataset):,} examples, val {len(val_dataset):,} examples")
-    train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-    val_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+    train_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
+    val_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
 
     # Sanity check on types before formatting
     sample = train_dataset[0]
