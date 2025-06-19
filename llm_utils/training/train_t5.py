@@ -411,14 +411,15 @@ def main():
     # Prepare shared args_dict for Seq2SeqTrainingArguments
     run_name_val = f"{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     logging_dir_val = f"logs/{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-    args_dict = dict(
+    # --- Refactored argument construction for rank-specific settings ---
+    common_args = dict(
         run_name=run_name_val,
         logging_dir=logging_dir_val,
         output_dir=args_cli.output_dir,
         per_device_train_batch_size=base_batch_size,
         per_device_eval_batch_size=base_batch_size,
         num_train_epochs=args_cli.total_epochs,
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         eval_steps=dynamic_eval_steps,
         save_total_limit=15,
         logging_steps=50,
@@ -434,23 +435,23 @@ def main():
         generation_max_length=min(args_cli.max_target_length, 256),
         generation_num_beams=1,
     )
-    # Rank-specific overrides
-    if rank == 0:
-        args_dict.update(
-            load_best_model_at_end=True,
-            save_strategy="steps",
-            save_steps=dynamic_eval_steps,
-            metric_for_best_model="combined" if args_cli.calculate_meteor else "rougeL",
-            greater_is_better=True,
-        )
-    else:
-        args_dict.update(
-            load_best_model_at_end=False,
-            save_strategy="no",
-            save_steps=None,
-            metric_for_best_model=None,
-            greater_is_better=None,
-        )
+    rank0_args = dict(
+        load_best_model_at_end=True,
+        save_strategy="steps",
+        save_steps=dynamic_eval_steps,
+        metric_for_best_model="combined" if args_cli.calculate_meteor else "rougeL",
+        greater_is_better=True,
+    )
+    non_rank0_args = dict(
+        load_best_model_at_end=False,
+        save_strategy="no",
+        save_steps=None,
+        # Do NOT define metric_for_best_model or greater_is_better at all
+    )
+    args_dict = {
+        **common_args,
+        **(rank0_args if rank == 0 else non_rank0_args),
+    }
     args = Seq2SeqTrainingArguments(**args_dict)
 
     # The run_name variable below is now redundant since it's incorporated above; remove if not used elsewhere.
