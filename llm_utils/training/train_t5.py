@@ -454,26 +454,33 @@ def main():
     from transformers import Seq2SeqTrainer as HFSeq2SeqTrainer, TrainerCallback
     # Custom callback to log model output/label shapes on prediction step
     class PredictionShapeLoggerCallback(TrainerCallback):
-        def on_prediction_step(self, args, state, control, logs=None, **kwargs):
-                # The prediction outputs are usually in kwargs
-                if 'prediction_outputs' in kwargs:
-                    outputs = kwargs['prediction_outputs']
-                    # outputs typically contains:
-                    # - predictions: model predictions
-                    # - label_ids: ground truth labels
-                    # - inputs: input data (if return_inputs=True)
-                    
-                    predictions = outputs.predictions
-                    labels = outputs.label_ids
-                    
-                    # Process your predictions here
-                    print(f"Batch predictions shape: {predictions.shape}")
-                    
-                # Alternative: sometimes available in logs
-                if logs and 'predictions' in logs:
-                    predictions = logs['predictions']
+        def on_prediction_step(self, args, state, control, **kwargs):
+            print("Available kwargs:", kwargs.keys())  # Debug what's actually available
             
-        return control
+            # These are more reliably available:
+            if 'model' in kwargs:
+                model = kwargs['model']
+                print(f"Model: {type(model)}")
+            
+            if 'inputs' in kwargs:
+                inputs = kwargs['inputs']
+                # Get input dimensions
+                if isinstance(inputs, dict):
+                    for key, value in inputs.items():
+                        if hasattr(value, 'shape'):
+                            print(f"Input {key} shape: {value.shape}")
+                elif hasattr(inputs, 'shape'):
+                    print(f"Inputs shape: {inputs.shape}")
+            
+            # Check state for batch/step info
+            if state:
+                print(f"Current step: {state.prediction_step if hasattr(state, 'prediction_step') else 'N/A'}")
+            
+            # Args might contain batch size info
+            if args:
+                print(f"Per device batch size: {args.per_device_eval_batch_size}")
+                if hasattr(args, 'generation_max_length'):
+                    print(f"Max generation length: {args.generation_max_length}")
 
     class TimingSeq2SeqTrainer(HFSeq2SeqTrainer):
         def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
