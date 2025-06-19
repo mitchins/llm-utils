@@ -283,8 +283,9 @@ def main():
 
     def compute_metrics(eval_preds):
         from transformers.trainer_utils import is_main_process
-        if not is_main_process():
-            return {}
+        if dist.is_available() and dist.is_initialized():
+            if dist.get_rank() != 0:
+                return {}
         preds, labels = eval_preds
 
         # Ensure tensors are moved to CPU and converted to numpy
