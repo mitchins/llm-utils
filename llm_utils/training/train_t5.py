@@ -130,58 +130,63 @@ def main():
     # Logging at the start of the script
     logging.basicConfig(level=logging.DEBUG if args_cli.debug else logging.INFO)
     logger = logging.getLogger(__name__)
-    logger.info("🚦 Process start: initializing training script.")
-    logger.info("🚀 Starting T5 training script...")
+    # === Rank-aware logger ===
+    def rank_logger(level, message):
+        rank = os.environ.get("RANK", "0")
+        getattr(logger, level)(f"[rank{rank}] {message}")
+
+    rank_logger("info", "🚦 Process start: initializing training script.")
+    rank_logger("info", "🚀 Starting T5 training script...")
     if not args_cli.train_dataset_dir:
         parser.error("You must provide --train-dataset-dir.")
-    logger.info(f"🧠 Using model checkpoint: {args_cli.model_checkpoint}")
-    logger.info("🧮 Initializing dataset preprocessing and tokenization pipeline...")
+    rank_logger("info", f"🧠 Using model checkpoint: {args_cli.model_checkpoint}")
+    rank_logger("info", "🧮 Initializing dataset preprocessing and tokenization pipeline...")
 
     if args_cli.output_dir is None:
         args_cli.output_dir = f"{args_cli.task_name}_model"
 
     # ----------------- TOKENIZER LOAD (must occur before tokenization) -----------------
     model_checkpoint = args_cli.model_checkpoint
-    logger.info("🔤 Loading tokenizer...")
+    rank_logger("info", "🔤 Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, use_fast=True)
-    logger.info("✅ Tokenizer loaded.")
+    rank_logger("info", "✅ Tokenizer loaded.")
 
     # Only load from disk (HuggingFace datasets), or from CSV/JSON if specified
     from pathlib import Path
     train_path = Path(args_cli.train_dataset_dir)
     if train_path.suffix == ".csv":
         import pandas as pd
-        logger.info("📄 Detected CSV format for training dataset.")
+        rank_logger("info", "📄 Detected CSV format for training dataset.")
         df = pd.read_csv(train_path)
         train_dataset = Dataset.from_pandas(df)
     elif train_path.suffix == ".json":
         import pandas as pd
-        logger.info("📄 Detected JSON format for training dataset.")
+        rank_logger("info", "📄 Detected JSON format for training dataset.")
         df = pd.read_json(train_path)
         train_dataset = Dataset.from_pandas(df)
     else:
-        logger.info("📂 Loading HuggingFace dataset from disk...")
+        rank_logger("info", "📂 Loading HuggingFace dataset from disk...")
         train_dataset = Dataset.load_from_disk(args_cli.train_dataset_dir)
 
     if args_cli.eval_dataset_dir:
         eval_path = Path(args_cli.eval_dataset_dir)
         if eval_path.suffix == ".csv":
             import pandas as pd
-            logger.info("📄 Detected CSV format for evaluation dataset.")
+            rank_logger("info", "📄 Detected CSV format for evaluation dataset.")
             df = pd.read_csv(eval_path)
             val_dataset = Dataset.from_pandas(df)
         elif eval_path.suffix == ".json":
             import pandas as pd
-            logger.info("📄 Detected JSON format for evaluation dataset.")
+            rank_logger("info", "📄 Detected JSON format for evaluation dataset.")
             df = pd.read_json(eval_path)
             val_dataset = Dataset.from_pandas(df)
         else:
             val_dataset = Dataset.load_from_disk(args_cli.eval_dataset_dir)
-        logger.info(f"✅ Loaded train ({len(train_dataset)}), eval ({len(val_dataset)}) from disk or file.")
+        rank_logger("info", f"✅ Loaded train ({len(train_dataset)}), eval ({len(val_dataset)}) from disk or file.")
     else:
         total_examples = len(train_dataset)
         eval_size = int(total_examples * args_cli.validation_size)
-        logger.info(f"📊 Splitting train into train/val: total {total_examples}, val size {eval_size} ({(eval_size/total_examples)*100:.2f}%)")
+        rank_logger("info", f"📊 Splitting train into train/val: total {total_examples}, val size {eval_size} ({(eval_size/total_examples)*100:.2f}%)")
         split = train_dataset.train_test_split(test_size=eval_size/total_examples, seed=42)
         train_dataset = split["train"]
         val_dataset = split["test"]
@@ -199,16 +204,16 @@ def main():
         if num_empty_output > 0 and not args_cli.allow_empty_output:
             raise ValueError(f"❌ Found {num_empty_output} empty output rows in '{args_cli.target_col}'. Use --allow-empty-output to bypass.")
     else:
-        logger.info("⚡ Dataset is pre-tokenized — skipping empty input/output validation.")
+        rank_logger("info", "⚡ Dataset is pre-tokenized — skipping empty input/output validation.")
 
     # Warn if user requests a long context but model is not a known long-context model
     if args_cli.max_input_length > 2048 and not any(s in model_checkpoint.lower() for s in ["longt5", "long-t5", "tglobal"]):
-        logger.warning(f"⚠️ Specified max_input_length={args_cli.max_input_length} but model '{model_checkpoint}' may not support long contexts. Proceed with caution.")
+        rank_logger("warning", f"⚠️ Specified max_input_length={args_cli.max_input_length} but model '{model_checkpoint}' may not support long contexts. Proceed with caution.")
 
-    logger.info("🧠 Loading model...")
+    rank_logger("info", "🧠 Loading model...")
     # Prepare model
     model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
-    logger.info("✅ Model loaded.")
+    rank_logger("info", "✅ Model loaded.")
     # Suppress warning about use_cache with gradient checkpointing
     model.config.use_cache = False
 
@@ -241,7 +246,7 @@ def main():
 
         from collections import defaultdict
         if not structured_preds or not structured_labels:
-            logger.warning("⚠️ Empty or malformed structured predictions; returning empty metric set.")
+            rank_logger("warning", "⚠️ Empty or malformed structured predictions; returning empty metric set.")
             return {}
 
         metrics = defaultdict(list)
@@ -282,11 +287,11 @@ def main():
         import os
         print(f"[📏] compute_metrics() called on rank {os.environ.get('RANK', '0')}")
         print(f"[📊] Predictions size: {len(eval_preds.predictions)} | Labels size: {len(eval_preds.label_ids)}")
-        logger.info(f"🔍 compute_metrics invoked on rank {os.environ.get('RANK', '0')}")
+        rank_logger("info", f"🔍 compute_metrics invoked on rank {os.environ.get('RANK', '0')}")
         import numpy as np
         rank = int(os.environ.get("RANK", "0"))
         if args_cli.debug:
-            logger.info(f"🧪 compute_metrics invoked on rank {rank}")
+            rank_logger("info", f"🧪 compute_metrics invoked on rank {rank}")
         if args_cli.fields:
             field_specs = dict(item.split(":") for item in args_cli.fields.split(","))
             metrics = compute_structured_metrics(eval_preds, field_specs)
@@ -307,7 +312,7 @@ def main():
         try:
             decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
         except OverflowError as e:
-            logger.error("❌ Overflow during decoding. Saving raw predictions to 'debug_predictions.npy'.")
+            rank_logger("error", "❌ Overflow during decoding. Saving raw predictions to 'debug_predictions.npy'.")
             np.save("debug_predictions.npy", predictions)
             raise e
 
@@ -340,7 +345,7 @@ def main():
 
     def report_memory():
         mem = psutil.Process().memory_info().rss / (1024 * 1024)
-        logger.info(f"🧠 Current memory usage: {mem:.2f} MB")
+        rank_logger("info", f"🧠 Current memory usage: {mem:.2f} MB")
 
     def preprocess_t5(example):
         model_inputs = tokenizer(
@@ -359,10 +364,10 @@ def main():
         return model_inputs
 
     # Tokenize train and val splits after splitting
-    logger.info("🪄 Starting dataset tokenization...")
+    rank_logger("info", "🪄 Starting dataset tokenization...")
     report_memory()
     if not is_tokenized:
-        logger.info("🔄 Dataset not yet tokenized — applying preprocessing...")
+        rank_logger("info", "🔄 Dataset not yet tokenized — applying preprocessing...")
         train_dataset = train_dataset.map(
             preprocess_t5,
             batched=True,
@@ -378,13 +383,13 @@ def main():
             desc="🧠 Tokenizing val set",
         )
     else:
-        logger.info("⚡ Detected pre-tokenized dataset — skipping tokenization.")
+        rank_logger("info", "⚡ Detected pre-tokenized dataset — skipping tokenization.")
     report_memory()
 
     # Filter by input length
     train_dataset = train_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
     val_dataset = val_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
-    logger.info(f"✅ Tokenization complete: train {len(train_dataset):,} examples, val {len(val_dataset):,} examples")
+    rank_logger("info", f"✅ Tokenization complete: train {len(train_dataset):,} examples, val {len(val_dataset):,} examples")
     # Do not use type="Torch", it'll cause inefficient warnings. Let DataCollatorForSeq2Seq handle it.
     train_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
     val_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
@@ -397,22 +402,22 @@ def main():
         base_batch_size = args_cli.batch_size
     else:
         base_batch_size = determine_batch_size(args_cli.model_checkpoint, False)
-    logger.info(f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
+    rank_logger("info", f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
 
     # Estimate dynamic evaluation steps: allow override with --eval_steps, else prefer 1/3 epoch, clamp at 10k or 1 epoch
     steps_per_epoch = len(train_dataset) // base_batch_size
     train_len = len(train_dataset)
     if args_cli.eval_steps is not None:
         dynamic_eval_steps = args_cli.eval_steps
-        logger.info(f"📏 Overriding eval steps: {dynamic_eval_steps}")
+        rank_logger("info", f"📏 Overriding eval steps: {dynamic_eval_steps}")
     else:
         # Prefer evaluating every 1/3 of an epoch, but clamp properly
         eval_steps = max(1, min(int(train_len * 1/3), 10_000))
         dynamic_eval_steps = eval_steps
-        logger.info(f"🔢 Dynamically setting eval/save every {dynamic_eval_steps} steps (⅓ epoch preferred, clamped at 10k or 1 epoch).")
+        rank_logger("info", f"🔢 Dynamically setting eval/save every {dynamic_eval_steps} steps (⅓ epoch preferred, clamped at 10k or 1 epoch).")
 
     if args_cli.fields:
-        logger.info(f"🧪 Structured metric evaluation active: {args_cli.fields}")
+        rank_logger("info", f"🧪 Structured metric evaluation active: {args_cli.fields}")
 
     # Determine optimizer: Adafactor by default, AdamW if --disable-adafactor is set
     optim_type = "adamw_hf" if args_cli.disable_adafactor else "adafactor"
@@ -451,7 +456,7 @@ def main():
 
     writer = SummaryWriter(log_dir=str(args.logging_dir))
 
-    logger.info("🏋️ Beginning training loop...")
+    rank_logger("info", "🏋️ Beginning training loop...")
     # Enable gradient checkpointing to save memory (especially helpful with DeepSpeed)
     model.gradient_checkpointing_enable()
     import time
@@ -459,42 +464,38 @@ def main():
     # Custom callback to log model output/label shapes on prediction step
     # === Helper for rank-prefixed logging ===
     from torch.distributed import is_initialized, get_rank
-    def rank_log(message):
-        rank = f"rank{get_rank()}" if is_initialized() else "rank0"
-        logger.info(f"[{rank}] {message}")
 
     class PredictionShapeLoggerCallback(TrainerCallback):
         def on_prediction_step(self, args, state, control, **kwargs):
-            rank_log(f"Available kwargs: {list(kwargs.keys())}")
+            rank_logger("info", f"Available kwargs: {list(kwargs.keys())}")
             if 'model' in kwargs:
                 model = kwargs['model']
-                rank_log(f"Model: {type(model)}")
+                rank_logger("info", f"Model: {type(model)}")
             if 'inputs' in kwargs:
                 inputs = kwargs['inputs']
                 if isinstance(inputs, dict):
                     for key, value in inputs.items():
                         if hasattr(value, 'shape'):
-                            # Not rank-prefixed, so do not log shapes here (to avoid excessive logs)
                             pass
                 elif hasattr(inputs, 'shape'):
                     pass
             if state:
                 step = getattr(state, 'prediction_step', None)
-                rank_log(f"Current step: {step if step is not None else 'N/A'}")
+                rank_logger("info", f"Current step: {step if step is not None else 'N/A'}")
             if args:
-                rank_log(f"Per device batch size: {args.per_device_eval_batch_size}")
+                rank_logger("info", f"Per device batch size: {args.per_device_eval_batch_size}")
                 if hasattr(args, 'generation_max_length'):
-                    rank_log(f"Max generation length: {args.generation_max_length}")
+                    rank_logger("info", f"Max generation length: {args.generation_max_length}")
 
     class TimingSeq2SeqTrainer(HFSeq2SeqTrainer):
         def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
             if self.args.predict_with_generate and not prediction_loss_only:
                 self._start_time = time.time()
-                rank_log("🔁 Generation started...")
+                rank_logger("info", "🔁 Generation started...")
             outputs = super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
             if self.args.predict_with_generate and not prediction_loss_only:
                 duration = time.time() - self._start_time
-                rank_log(f"✅ Generation complete in {duration:.2f}s")
+                rank_logger("info", f"✅ Generation complete in {duration:.2f}s")
             return outputs
 
     from transformers import DataCollatorForSeq2Seq
@@ -514,7 +515,7 @@ def main():
             MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512),
             PredictionShapeLoggerCallback(),
         ],
-        compute_metrics=compute_metrics if int(os.environ.get("RANK", "0")) == 0 else None,
+        compute_metrics=compute_metrics,
     )
 
     trainer.train()
@@ -526,7 +527,7 @@ def main():
     # Save final model to versioned path (main process only)
     is_main_process = not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
     if is_main_process:
-        logger.info(f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
+        rank_logger("info", f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
         root = Path(args_cli.output_dir)
         i = 1
         while Path(f"{root}-v{i}").exists():
@@ -535,7 +536,7 @@ def main():
         final_path.mkdir(parents=True, exist_ok=True)
         model.save_pretrained(final_path)
         tokenizer.save_pretrained(final_path)
-        logger.info(f"✅ Saved final model to {final_path}")
+        rank_logger("info", f"✅ Saved final model to {final_path}")
 
 if __name__ == "__main__":
     main()
