@@ -457,44 +457,44 @@ def main():
     import time
     from transformers import Seq2SeqTrainer as HFSeq2SeqTrainer, TrainerCallback
     # Custom callback to log model output/label shapes on prediction step
+    # === Helper for rank-prefixed logging ===
+    from torch.distributed import is_initialized, get_rank
+    def rank_log(message):
+        rank = f"rank{get_rank()}" if is_initialized() else "rank0"
+        logger.info(f"[{rank}] {message}")
+
     class PredictionShapeLoggerCallback(TrainerCallback):
         def on_prediction_step(self, args, state, control, **kwargs):
-            print("Available kwargs:", kwargs.keys())  # Debug what's actually available
-            
-            # These are more reliably available:
+            rank_log(f"Available kwargs: {list(kwargs.keys())}")
             if 'model' in kwargs:
                 model = kwargs['model']
-                print(f"Model: {type(model)}")
-            
+                rank_log(f"Model: {type(model)}")
             if 'inputs' in kwargs:
                 inputs = kwargs['inputs']
-                # Get input dimensions
                 if isinstance(inputs, dict):
                     for key, value in inputs.items():
                         if hasattr(value, 'shape'):
-                            print(f"Input {key} shape: {value.shape}")
+                            # Not rank-prefixed, so do not log shapes here (to avoid excessive logs)
+                            pass
                 elif hasattr(inputs, 'shape'):
-                    print(f"Inputs shape: {inputs.shape}")
-            
-            # Check state for batch/step info
+                    pass
             if state:
-                print(f"Current step: {state.prediction_step if hasattr(state, 'prediction_step') else 'N/A'}")
-            
-            # Args might contain batch size info
+                step = getattr(state, 'prediction_step', None)
+                rank_log(f"Current step: {step if step is not None else 'N/A'}")
             if args:
-                print(f"Per device batch size: {args.per_device_eval_batch_size}")
+                rank_log(f"Per device batch size: {args.per_device_eval_batch_size}")
                 if hasattr(args, 'generation_max_length'):
-                    print(f"Max generation length: {args.generation_max_length}")
+                    rank_log(f"Max generation length: {args.generation_max_length}")
 
     class TimingSeq2SeqTrainer(HFSeq2SeqTrainer):
         def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
             if self.args.predict_with_generate and not prediction_loss_only:
                 self._start_time = time.time()
-                print(f"[🔁] Generation started...")
+                rank_log("🔁 Generation started...")
             outputs = super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
             if self.args.predict_with_generate and not prediction_loss_only:
                 duration = time.time() - self._start_time
-                print(f"[✅] Generation complete in {duration:.2f}s")
+                rank_log(f"✅ Generation complete in {duration:.2f}s")
             return outputs
 
     from transformers import DataCollatorForSeq2Seq
