@@ -274,7 +274,10 @@ def main():
 
         return final_metrics
 
-    def compute_metrics(pred):
+    def compute_metrics(eval_preds):
+        import os
+        print(f"[📏] compute_metrics() called on rank {os.environ.get('RANK', '0')}")
+        print(f"[📊] Predictions size: {len(eval_preds.predictions)} | Labels size: {len(eval_preds.label_ids)}")
         logger.info(f"🔍 compute_metrics invoked on rank {os.environ.get('RANK', '0')}")
         import numpy as np
         rank = int(os.environ.get("RANK", "0"))
@@ -282,10 +285,12 @@ def main():
             logger.info(f"🧪 compute_metrics invoked on rank {rank}")
         if args_cli.fields:
             field_specs = dict(item.split(":") for item in args_cli.fields.split(","))
-            return compute_structured_metrics(pred, field_specs)
+            metrics = compute_structured_metrics(eval_preds, field_specs)
+            print(f"[✅] compute_metrics() completed on rank {os.environ.get('RANK', '0')}")
+            return metrics
 
-        predictions = pred.predictions
-        labels = pred.label_ids
+        predictions = eval_preds.predictions
+        labels = eval_preds.label_ids
 
         # Handle case where predictions are logits instead of token IDs
         if getattr(predictions, "ndim", None) == 3:  # shape: [batch, seq_len, vocab]
@@ -326,6 +331,7 @@ def main():
             metrics["meteor"] = meteor_score
             metrics["combined"] = 0.3 * rouge2 + 0.2 * rougeL + 0.5 * meteor_score
 
+        print(f"[✅] compute_metrics() completed on rank {os.environ.get('RANK', '0')}")
         return metrics
 
     def report_memory():
