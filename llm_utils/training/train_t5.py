@@ -375,9 +375,9 @@ def main():
     train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
     val_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
 
-    # Patch: Ensure labels are always torch tensors via numpy conversion
+    # Patch: Ensure labels are always torch tensors; avoid np.array for variable-length
     def labels_to_tensor(batch):
-        batch["labels"] = torch.tensor(np.array(batch["labels"]), dtype=torch.int64)
+        batch["labels"] = [torch.tensor(x, dtype=torch.int64) for x in batch["labels"]]
         return batch
     train_dataset = train_dataset.map(labels_to_tensor, batched=True)
     val_dataset = val_dataset.map(labels_to_tensor, batched=True)
