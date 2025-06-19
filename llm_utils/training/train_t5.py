@@ -124,6 +124,10 @@ parser.add_argument("--disable-adafactor", action="store_true", help="Use AdamW 
 parser.add_argument("--train-dataset-dir", type=str, help="Path to a HuggingFace dataset directory for training (saved with save_to_disk())")
 parser.add_argument("--eval-dataset-dir", type=str, help="Optional path to evaluation dataset directory (if not provided, splits train)")
 
+def is_main_process() -> bool:
+    import torch.distributed as dist
+    return not dist.is_initialized() or dist.get_rank() == 0
+
 def main():
     args_cli = parser.parse_args()
 
@@ -282,12 +286,9 @@ def main():
     import sys
 
     def compute_metrics(eval_preds):
-        from transformers.trainer_utils import is_main_process
-        import torch.distributed as dist
-
         if not is_main_process():
-            if dist.is_initialized():
-                dist.barrier()
+            import torch.distributed as dist
+            dist.barrier()
             return {}
 
         preds, labels = eval_preds
@@ -508,8 +509,8 @@ def main():
     # (Filtering log now occurs before split)
 
     # Save final model to versioned path (main process only)
-    is_main_process = (not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0) and trainer.state.best_model_checkpoint is not None
-    if is_main_process:
+    save_main = is_main_process() and trainer.state.best_model_checkpoint is not None
+    if save_main:
         rank_logger("info", f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
         root = Path(args_cli.output_dir)
         i = 1
