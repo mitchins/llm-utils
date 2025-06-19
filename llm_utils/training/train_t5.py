@@ -274,7 +274,11 @@ def main():
 
         return final_metrics
 
-    def compute_metrics(eval_preds):
+    import sys
+
+    def compute_metrics(pred):
+        print("🧪 compute_metrics has been called!")  # This should show up or the process should terminate.
+        sys.exit("💥 Exiting from inside compute_metrics for debug purposes.")
         import os
         print(f"[📏] compute_metrics() called on rank {os.environ.get('RANK', '0')}")
         print(f"[📊] Predictions size: {len(eval_preds.predictions)} | Labels size: {len(eval_preds.label_ids)}")
