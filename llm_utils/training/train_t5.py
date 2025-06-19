@@ -281,26 +281,20 @@ def main():
 
     import sys
 
+    from transformers.trainer_utils import is_main_process
+    import torch.distributed as dist
     def compute_metrics(eval_preds):
-        from transformers.trainer_utils import is_main_process
-        if dist.is_available() and dist.is_initialized():
-            if dist.get_rank() != 0:
-                return {}
         preds, labels = eval_preds
-
         # Ensure tensors are moved to CPU and converted to numpy
         if hasattr(preds, "cpu"):
             preds = preds.cpu().numpy()
         if hasattr(labels, "cpu"):
             labels = labels.cpu().numpy()
-
         # If predictions are logits (3D), take argmax
         if isinstance(preds, np.ndarray) and preds.ndim == 3:
             preds = np.argmax(preds, axis=-1)
-
         # Replace label -100s with pad token for decoding
         labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
-
         # --- Filter invalid token ids before decoding to prevent OverflowError ---
         # For predictions
         preds = np.where(preds > tokenizer.vocab_size, tokenizer.pad_token_id, preds)
@@ -309,15 +303,18 @@ def main():
         labels = np.where(labels > tokenizer.vocab_size, tokenizer.pad_token_id, labels)
         labels = np.clip(labels, 0, tokenizer.vocab_size)
 
-        decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
-        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+        if is_main_process():
+            decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+            decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+            import nltk
+            decoded_preds = ["\n".join(nltk.sent_tokenize(pred.strip())) for pred in decoded_preds]
+            decoded_labels = ["\n".join(nltk.sent_tokenize(label.strip())) for label in decoded_labels]
+            result = rouge_metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
+        else:
+            result = {}
 
-        # Format decoded output for metrics
-        import nltk
-        decoded_preds = ["\n".join(nltk.sent_tokenize(pred.strip())) for pred in decoded_preds]
-        decoded_labels = ["\n".join(nltk.sent_tokenize(label.strip())) for label in decoded_labels]
-
-        result = rouge_metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
         return result
 
     def report_memory():
@@ -484,6 +481,18 @@ def main():
             return outputs
 
     from transformers import DataCollatorForSeq2Seq
+    # Only register EarlyStoppingCallback on main process (local_rank in (-1, 0))
+    callbacks = [
+        EpochNormalizedLogger(writer),
+        MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512)
+    ]
+    # Use local_rank from args if available, else fallback to rank variable
+    local_rank = getattr(args, "local_rank", -1)
+    if local_rank in (-1, 0):
+        callbacks.insert(0, EarlyStoppingCallback(
+            early_stopping_patience=args_cli.early_stopping_patience,
+            early_stopping_threshold=args_cli.min_delta
+        ))
     trainer = TimingSeq2SeqTrainer(
         model=model,
         args=args,
@@ -491,14 +500,7 @@ def main():
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
         data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
-        callbacks=[
-            EarlyStoppingCallback(
-                early_stopping_patience=args_cli.early_stopping_patience,
-                early_stopping_threshold=args_cli.min_delta
-            ),
-            EpochNormalizedLogger(writer),
-            MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512)
-        ],
+        callbacks=callbacks,
         compute_metrics=compute_metrics,
     )
 
