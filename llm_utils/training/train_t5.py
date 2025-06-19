@@ -405,54 +405,47 @@ def main():
     # Determine optimizer: Adafactor by default, AdamW if --disable-adafactor is set
     optim_type = "adamw_hf" if args_cli.disable_adafactor else "adafactor"
 
-    # Determine rank for distributed training
-    import torch.distributed as dist
-    rank = dist.get_rank() if dist.is_initialized() else 0
-    # Prepare shared args_dict for Seq2SeqTrainingArguments
-    run_name_val = f"{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-    logging_dir_val = f"logs/{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-    # --- Refactored argument construction for rank-specific settings ---
-    common_args = dict(
-        run_name=run_name_val,
-        logging_dir=logging_dir_val,
-        output_dir=args_cli.output_dir,
-        per_device_train_batch_size=base_batch_size,
-        per_device_eval_batch_size=base_batch_size,
-        num_train_epochs=args_cli.total_epochs,
-        eval_strategy="steps",
-        eval_steps=dynamic_eval_steps,
-        save_total_limit=15,
-        logging_steps=50,
-        report_to="tensorboard",
-        predict_with_generate=True,
-        fp16=args_cli.enable_fp16,
-        learning_rate=args_cli.learning_rate,
-        warmup_steps=args_cli.warm_up_steps,
-        lr_scheduler_type=args_cli.lr_scheduler_type,
-        gradient_accumulation_steps=args_cli.gradient_accumulation_steps,
-        deepspeed=args_cli.deepspeed,
-        optim=optim_type,
-        generation_max_length=min(args_cli.max_target_length, 256),
-        generation_num_beams=1,
-    )
-    rank0_args = dict(
-        load_best_model_at_end=True,
-        save_strategy="steps",
-        save_steps=dynamic_eval_steps,
-        metric_for_best_model="combined" if args_cli.calculate_meteor else "rougeL",
-        greater_is_better=True,
-    )
-    non_rank0_args = dict(
-        load_best_model_at_end=False,
-        save_strategy="no",
-        save_steps=None,
-        # Do NOT define metric_for_best_model or greater_is_better at all
-    )
-    args_dict = {
-        **common_args,
-        **(rank0_args if rank == 0 else non_rank0_args),
+    # --- Determine local_rank using torch.distributed ---
+    if torch.distributed.is_initialized():
+        local_rank = torch.distributed.get_rank()
+    else:
+        local_rank = 0
+
+    output_dir = args_cli.output_dir
+    batch_size = base_batch_size
+    num_train_epochs = args_cli.total_epochs
+    learning_rate = args_cli.learning_rate
+    logging_dir = f"logs/{args_cli.task_name}-{model_name}-{dataset_name}-bs{batch_size}-lr{learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+    training_args_kwargs = {
+        "output_dir": output_dir,
+        "evaluation_strategy": "epoch",
+        "per_device_train_batch_size": batch_size,
+        "per_device_eval_batch_size": batch_size,
+        "predict_with_generate": True,
+        "logging_dir": logging_dir,
+        "save_total_limit": 1,
+        "num_train_epochs": num_train_epochs,
+        "learning_rate": learning_rate,
+        "report_to": "none",
     }
-    args = Seq2SeqTrainingArguments(**args_dict)
+
+    if local_rank == 0:
+        training_args_kwargs.update({
+            "metric_for_best_model": "eval_rougeL",
+            "load_best_model_at_end": True,
+            "save_strategy": "epoch",
+            "save_steps": None
+        })
+    else:
+        training_args_kwargs.update({
+            "metric_for_best_model": None,
+            "load_best_model_at_end": False,
+            "save_strategy": "no",
+            "save_steps": None
+        })
+
+    args = Seq2SeqTrainingArguments(**training_args_kwargs)
 
     # The run_name variable below is now redundant since it's incorporated above; remove if not used elsewhere.
     # run_name = f"{model_name}-{dataset_name}-bs{base_batch_size}-lr{args.learning_rate}-ws{args.warmup_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
