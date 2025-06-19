@@ -125,7 +125,11 @@ parser.add_argument("--train-dataset-dir", type=str, help="Path to a HuggingFace
 parser.add_argument("--eval-dataset-dir", type=str, help="Optional path to evaluation dataset directory (if not provided, splits train)")
 
 def is_main_process() -> bool:
-    return not dist.is_initialized() or dist.get_rank() == 0
+    try:
+        import torch.distributed as dist
+        return not dist.is_initialized() or dist.get_rank() == 0
+    except Exception:
+        return True
 
 def main():
     args_cli = parser.parse_args()
@@ -405,6 +409,12 @@ def main():
     # Determine optimizer: Adafactor by default, AdamW if --disable-adafactor is set
     optim_type = "adamw_hf" if args_cli.disable_adafactor else "adafactor"
 
+    # Determine local_rank for conditional saving (robust, always set)
+    if dist.is_available() and dist.is_initialized():
+        local_rank = dist.get_rank()
+    else:
+        local_rank = 0
+
     args = Seq2SeqTrainingArguments(
         run_name=f"{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
         logging_dir=f"logs/{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
@@ -431,7 +441,8 @@ def main():
         deepspeed=args_cli.deepspeed,
         optim=optim_type,
         generation_max_length=min(args_cli.max_target_length, 256),
-        generation_num_beams=1
+        generation_num_beams=1,
+        should_save=(local_rank == 0)
     )
 
     # The run_name variable below is now redundant since it's incorporated above; remove if not used elsewhere.
@@ -506,8 +517,8 @@ def main():
 
     # (Filtering log now occurs before split)
 
-    # Save final model to versioned path (main process only)
-    save_main = is_main_process() and trainer.state.best_model_checkpoint is not None
+    # Save final model to versioned path (main process only, using should_save logic)
+    save_main = trainer.args.should_save and trainer.state.best_model_checkpoint is not None
     if save_main:
         rank_logger("info", f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
         root = Path(args_cli.output_dir)
