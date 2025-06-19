@@ -17,6 +17,8 @@ from .callbacks import EpochNormalizedLogger, MemoryUsageLogger, ManualEarlyStop
 from .evaluation_utils import calculate_dynamic_eval_steps
 from .utils import load_and_filter_dataframe, determine_batch_size
 from torch.utils.tensorboard import SummaryWriter
+import torch
+import torch.distributed as dist
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Global counters for input length filtering
@@ -436,17 +438,19 @@ def main():
 
     # (Filtering log now occurs before split)
 
-    # Save final model to versioned path
-    logger.info(f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
-    root = Path(args_cli.output_dir)
-    i = 1
-    while Path(f"{root}-v{i}").exists():
-        i += 1
-    final_path = Path(f"{root}-v{i}")
-    final_path.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(final_path)
-    tokenizer.save_pretrained(final_path)
-    logger.info(f"✅ Saved final model to {final_path}")
+    # Save final model to versioned path (main process only)
+    is_main_process = not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
+    if is_main_process:
+        logger.info(f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
+        root = Path(args_cli.output_dir)
+        i = 1
+        while Path(f"{root}-v{i}").exists():
+            i += 1
+        final_path = Path(f"{root}-v{i}")
+        final_path.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(final_path)
+        tokenizer.save_pretrained(final_path)
+        logger.info(f"✅ Saved final model to {final_path}")
 
 if __name__ == "__main__":
     main()
