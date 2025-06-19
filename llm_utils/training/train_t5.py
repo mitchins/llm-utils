@@ -125,7 +125,6 @@ parser.add_argument("--train-dataset-dir", type=str, help="Path to a HuggingFace
 parser.add_argument("--eval-dataset-dir", type=str, help="Optional path to evaluation dataset directory (if not provided, splits train)")
 
 def is_main_process() -> bool:
-    import torch.distributed as dist
     return not dist.is_initialized() or dist.get_rank() == 0
 
 def main():
@@ -287,7 +286,6 @@ def main():
 
     def compute_metrics(eval_preds):
         if not is_main_process():
-            import torch.distributed as dist
             dist.barrier()
             return {}
 
