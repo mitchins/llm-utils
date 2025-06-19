@@ -301,6 +301,14 @@ def main():
         # Replace label -100s with pad token for decoding
         labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
 
+        # --- Filter invalid token ids before decoding to prevent OverflowError ---
+        # For predictions
+        preds = np.where(preds > tokenizer.vocab_size, tokenizer.pad_token_id, preds)
+        preds = np.clip(preds, 0, tokenizer.vocab_size)
+        # For labels (should already be in vocab, but just in case)
+        labels = np.where(labels > tokenizer.vocab_size, tokenizer.pad_token_id, labels)
+        labels = np.clip(labels, 0, tokenizer.vocab_size)
+
         decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
         decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 
@@ -493,7 +501,7 @@ def main():
     # (Filtering log now occurs before split)
 
     # Save final model to versioned path (main process only)
-    is_main_process = not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
+    is_main_process = (not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0) and trainer.state.best_model_checkpoint is not None
     if is_main_process:
         rank_logger("info", f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
         root = Path(args_cli.output_dir)
