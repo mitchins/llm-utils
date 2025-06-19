@@ -405,12 +405,6 @@ def main():
     # Determine optimizer: Adafactor by default, AdamW if --disable-adafactor is set
     optim_type = "adamw_hf" if args_cli.disable_adafactor else "adafactor"
 
-    # --- Determine local_rank using torch.distributed ---
-    if torch.distributed.is_initialized():
-        local_rank = torch.distributed.get_rank()
-    else:
-        local_rank = 0
-
     output_dir = args_cli.output_dir
     batch_size = base_batch_size
     num_train_epochs = args_cli.total_epochs
@@ -430,7 +424,7 @@ def main():
         "report_to": "none",
     }
 
-    if local_rank == 0:
+    if is_main_process():
         training_args_kwargs.update({
             "metric_for_best_model": "eval_rougeL",
             "load_best_model_at_end": True,
