@@ -283,9 +283,13 @@ def main():
 
     def compute_metrics(eval_preds):
         from transformers.trainer_utils import is_main_process
-        if dist.is_available() and dist.is_initialized():
-            if dist.get_rank() != 0:
-                return {}
+        import torch.distributed as dist
+
+        if not is_main_process():
+            if dist.is_initialized():
+                dist.barrier()
+            return {}
+
         preds, labels = eval_preds
 
         # Ensure tensors are moved to CPU and converted to numpy
@@ -318,6 +322,9 @@ def main():
         decoded_labels = ["\n".join(nltk.sent_tokenize(label.strip())) for label in decoded_labels]
 
         result = rouge_metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
+        # Ensure all other ranks are unblocked after metric computation
+        if dist.is_initialized():
+            dist.barrier()
         return result
 
     def report_memory():
