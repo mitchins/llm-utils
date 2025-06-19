@@ -492,7 +492,7 @@ def main():
 
     # === Trainer subclass: only save on rank 0 ===
     from typing import Optional
-    class TimingSeq2SeqTrainer(HFSeq2SeqTrainer):
+    class RankZeroOnlySaveTrainer(HFSeq2SeqTrainer):
         def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
             if self.args.predict_with_generate and not prediction_loss_only:
                 self._start_time = time.time()
