@@ -275,6 +275,7 @@ def main():
         return final_metrics
 
     def compute_metrics(pred):
+        print(f"🔍 compute_metrics invoked on rank {os.environ.get('RANK', '0')}")
         import numpy as np
         rank = int(os.environ.get("RANK", "0"))
         if args_cli.debug:
