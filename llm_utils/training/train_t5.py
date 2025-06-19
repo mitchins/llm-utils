@@ -372,15 +372,8 @@ def main():
     train_dataset = train_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
     val_dataset = val_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
     logger.info(f"✅ Tokenization complete: train {len(train_dataset):,} examples, val {len(val_dataset):,} examples")
-    train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-    val_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-
-    # Patch: Ensure labels are always torch tensors; avoid np.array for variable-length
-    def labels_to_tensor(batch):
-        batch["labels"] = [torch.tensor(x, dtype=torch.int64) for x in batch["labels"]]
-        return batch
-    train_dataset = train_dataset.map(labels_to_tensor, batched=True)
-    val_dataset = val_dataset.map(labels_to_tensor, batched=True)
+    train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+    val_dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
 
     model_name = args_cli.model_checkpoint.split("/")[-1]
     dataset_name = Path(args_cli.train_dataset_dir).stem
