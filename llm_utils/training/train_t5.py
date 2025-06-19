@@ -463,6 +463,17 @@ def main():
                 print(f"[✅] Generation complete in {duration:.2f}s")
             return outputs
 
+        # Custom callback to log model output size if present
+        def on_prediction_step(self, args, state, control, inputs, outputs=None, **kwargs):
+            input_len = inputs['input_ids'].shape[1]
+            label_len = inputs['labels'].shape[1] if 'labels' in inputs else None
+            output_len = None
+            if outputs is not None and isinstance(outputs, tuple):
+                output_tensor = outputs[0]
+                if hasattr(output_tensor, 'shape'):
+                    output_len = output_tensor.shape
+            print(f"[🧮] on_prediction_step: input len = {input_len}, label len = {label_len}, output shape = {output_len}")
+
     from transformers import DataCollatorForSeq2Seq
     trainer = TimingSeq2SeqTrainer(
         model=model,
