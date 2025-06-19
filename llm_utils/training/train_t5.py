@@ -370,12 +370,27 @@ def main():
     else:
         logger.info("⚡ Detected pre-tokenized dataset — skipping tokenization.")
     report_memory()
+
+    # Sanity check on types before formatting
+    sample = train_dataset[0]
+    if not isinstance(sample["labels"], list):
+        logger.warning(f"⚠️ Unexpected type for labels[0]: {type(sample['labels'])} (should be list)")
+    else:
+        logger.info("🔍 Labels[0] is correctly a list")
+
     # Filter by input length
     train_dataset = train_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
     val_dataset = val_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
     logger.info(f"✅ Tokenization complete: train {len(train_dataset):,} examples, val {len(val_dataset):,} examples")
     train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
     val_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+
+    # Sanity check on types before formatting
+    sample = train_dataset[0]
+    if not isinstance(sample["labels"], list):
+        logger.warning(f"⚠️ Unexpected type for labels[0]: {type(sample['labels'])} (should be list)")
+    else:
+        logger.info("🔍 Labels[0] is correctly a list")
 
     model_name = args_cli.model_checkpoint.split("/")[-1]
     dataset_name = Path(args_cli.train_dataset_dir).stem
