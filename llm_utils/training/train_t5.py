@@ -125,11 +125,7 @@ parser.add_argument("--train-dataset-dir", type=str, help="Path to a HuggingFace
 parser.add_argument("--eval-dataset-dir", type=str, help="Optional path to evaluation dataset directory (if not provided, splits train)")
 
 def is_main_process() -> bool:
-    try:
-        import torch.distributed as dist
-        return not dist.is_initialized() or dist.get_rank() == 0
-    except Exception:
-        return True
+    return not dist.is_initialized() or dist.get_rank() == 0
 
 def main():
     args_cli = parser.parse_args()
@@ -409,29 +405,24 @@ def main():
     # Determine optimizer: Adafactor by default, AdamW if --disable-adafactor is set
     optim_type = "adamw_hf" if args_cli.disable_adafactor else "adafactor"
 
-    # Determine local_rank for conditional saving (robust, always set)
-    if dist.is_available() and dist.is_initialized():
-        local_rank = dist.get_rank()
-    else:
-        local_rank = 0
-
-    args = Seq2SeqTrainingArguments(
-        run_name=f"{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
-        logging_dir=f"logs/{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+    # Determine rank for distributed training
+    import torch.distributed as dist
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    # Prepare shared args_dict for Seq2SeqTrainingArguments
+    run_name_val = f"{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    logging_dir_val = f"logs/{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    args_dict = dict(
+        run_name=run_name_val,
+        logging_dir=logging_dir_val,
         output_dir=args_cli.output_dir,
         per_device_train_batch_size=base_batch_size,
         per_device_eval_batch_size=base_batch_size,
         num_train_epochs=args_cli.total_epochs,
-        eval_strategy="steps",
+        evaluation_strategy="steps",
         eval_steps=dynamic_eval_steps,
-        save_strategy="steps",
-        save_steps=dynamic_eval_steps,
         save_total_limit=15,
         logging_steps=50,
         report_to="tensorboard",
-        load_best_model_at_end=True,
-        metric_for_best_model="combined" if args_cli.calculate_meteor else "rougeL",
-        greater_is_better=True,
         predict_with_generate=True,
         fp16=args_cli.enable_fp16,
         learning_rate=args_cli.learning_rate,
@@ -442,8 +433,26 @@ def main():
         optim=optim_type,
         generation_max_length=min(args_cli.max_target_length, 256),
         generation_num_beams=1,
-        should_save=(local_rank == 0)
+        should_save=(rank == 0),
     )
+    # Rank-specific overrides
+    if rank == 0:
+        args_dict.update(
+            load_best_model_at_end=True,
+            save_strategy="steps",
+            save_steps=dynamic_eval_steps,
+            metric_for_best_model="combined" if args_cli.calculate_meteor else "rougeL",
+            greater_is_better=True,
+        )
+    else:
+        args_dict.update(
+            load_best_model_at_end=False,
+            save_strategy="no",
+            save_steps=None,
+            metric_for_best_model=None,
+            greater_is_better=None,
+        )
+    args = Seq2SeqTrainingArguments(**args_dict)
 
     # The run_name variable below is now redundant since it's incorporated above; remove if not used elsewhere.
     # run_name = f"{model_name}-{dataset_name}-bs{base_batch_size}-lr{args.learning_rate}-ws{args.warmup_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
@@ -492,7 +501,18 @@ def main():
                 rank_logger("debug", f"✅ Generation complete in {duration:.2f}s")
             return outputs
 
-    from transformers import DataCollatorForSeq2Seq
+    from transformers import DataCollatorForSeq2Seq, EarlyStoppingCallback
+    # Prepare rank-aware callbacks
+    callbacks = []
+    if rank == 0:
+        callbacks.append(EarlyStoppingCallback(
+            early_stopping_patience=args_cli.early_stopping_patience,
+            early_stopping_threshold=args_cli.min_delta
+        ))
+    callbacks.extend([
+        EpochNormalizedLogger(writer),
+        MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512)
+    ])
     trainer = TimingSeq2SeqTrainer(
         model=model,
         args=args,
@@ -500,14 +520,7 @@ def main():
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
         data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
-        callbacks=[
-            EarlyStoppingCallback(
-                early_stopping_patience=args_cli.early_stopping_patience,
-                early_stopping_threshold=args_cli.min_delta
-            ),
-            EpochNormalizedLogger(writer),
-            MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512)
-        ],
+        callbacks=callbacks,
         compute_metrics=compute_metrics,
     )
 
@@ -517,7 +530,9 @@ def main():
 
     # (Filtering log now occurs before split)
 
-    # Save final model to versioned path (main process only, using should_save logic)
+    # Save final model to versioned path (main process only)
+    # Only save final model on main process (should_save handles this now)
+    # save_main = is_main_process() and trainer.state.best_model_checkpoint is not None
     save_main = trainer.args.should_save and trainer.state.best_model_checkpoint is not None
     if save_main:
         rank_logger("info", f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
