@@ -454,16 +454,26 @@ def main():
     from transformers import Seq2SeqTrainer as HFSeq2SeqTrainer, TrainerCallback
     # Custom callback to log model output/label shapes on prediction step
     class PredictionShapeLoggerCallback(TrainerCallback):
-        def on_prediction_step(self, args, state, control, prediction_step_output, **kwargs):
-            logger = logging.getLogger(__name__)
-            if prediction_step_output is not None:
-                generated_tokens, _, labels = prediction_step_output
-                if generated_tokens is not None:
-                    logger.info(f"[📏] Generated tokens shape: {getattr(generated_tokens, 'shape', 'N/A')}")
-                if labels is not None:
-                    logger.info(f"[📏] Labels shape: {getattr(labels, 'shape', 'N/A')}")
-            else:
-                logger.warning("[⚠️] prediction_step_output is None.")
+        def on_prediction_step(self, args, state, control, logs=None, **kwargs):
+                # The prediction outputs are usually in kwargs
+                if 'prediction_outputs' in kwargs:
+                    outputs = kwargs['prediction_outputs']
+                    # outputs typically contains:
+                    # - predictions: model predictions
+                    # - label_ids: ground truth labels
+                    # - inputs: input data (if return_inputs=True)
+                    
+                    predictions = outputs.predictions
+                    labels = outputs.label_ids
+                    
+                    # Process your predictions here
+                    print(f"Batch predictions shape: {predictions.shape}")
+                    
+                # Alternative: sometimes available in logs
+                if logs and 'predictions' in logs:
+                    predictions = logs['predictions']
+            
+        return control
 
     class TimingSeq2SeqTrainer(HFSeq2SeqTrainer):
         def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
