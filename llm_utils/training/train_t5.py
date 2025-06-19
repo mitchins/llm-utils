@@ -371,26 +371,13 @@ def main():
         logger.info("⚡ Detected pre-tokenized dataset — skipping tokenization.")
     report_memory()
 
-    # Sanity check on types before formatting
-    sample = train_dataset[0]
-    if not isinstance(sample["labels"], list):
-        logger.warning(f"⚠️ Unexpected type for labels[0]: {type(sample['labels'])} (should be list)")
-    else:
-        logger.info("🔍 Labels[0] is correctly a list")
-
     # Filter by input length
     train_dataset = train_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
     val_dataset = val_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
     logger.info(f"✅ Tokenization complete: train {len(train_dataset):,} examples, val {len(val_dataset):,} examples")
+    # Do not use type="Torch", it'll cause inefficient warnings. Let DataCollatorForSeq2Seq handle it.
     train_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
     val_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
-
-    # Sanity check on types before formatting
-    sample = train_dataset[0]
-    if not isinstance(sample["labels"], list):
-        logger.warning(f"⚠️ Unexpected type for labels[0]: {type(sample['labels'])} (should be list)")
-    else:
-        logger.info("🔍 Labels[0] is correctly a list")
 
     model_name = args_cli.model_checkpoint.split("/")[-1]
     dataset_name = Path(args_cli.train_dataset_dir).stem
@@ -457,8 +444,21 @@ def main():
     logger.info("🏋️ Beginning training loop...")
     # Enable gradient checkpointing to save memory (especially helpful with DeepSpeed)
     model.gradient_checkpointing_enable()
+    import time
+    from transformers import Seq2SeqTrainer as HFSeq2SeqTrainer
+    class TimingSeq2SeqTrainer(HFSeq2SeqTrainer):
+        def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+            if self.args.predict_with_generate and not prediction_loss_only:
+                self._start_time = time.time()
+                print(f"[🔁] Generation started...")
+            outputs = super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
+            if self.args.predict_with_generate and not prediction_loss_only:
+                duration = time.time() - self._start_time
+                print(f"[✅] Generation complete in {duration:.2f}s")
+            return outputs
+
     from transformers import DataCollatorForSeq2Seq
-    trainer = Seq2SeqTrainer(
+    trainer = TimingSeq2SeqTrainer(
         model=model,
         args=args,
         train_dataset=train_dataset,
