@@ -484,18 +484,6 @@ def main():
             return outputs
 
     from transformers import DataCollatorForSeq2Seq
-    # Only register EarlyStoppingCallback on main process (local_rank in (-1, 0))
-    callbacks = [
-        EpochNormalizedLogger(writer),
-        MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512)
-    ]
-    # Use local_rank from args if available, else fallback to rank variable
-    local_rank = getattr(args, "local_rank", -1)
-    if local_rank in (-1, 0):
-        callbacks.insert(0, EarlyStoppingCallback(
-            early_stopping_patience=args_cli.early_stopping_patience,
-            early_stopping_threshold=args_cli.min_delta
-        ))
     trainer = TimingSeq2SeqTrainer(
         model=model,
         args=args,
@@ -503,7 +491,14 @@ def main():
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
         data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
-        callbacks=callbacks,
+        callbacks=[
+            EarlyStoppingCallback(
+                early_stopping_patience=args_cli.early_stopping_patience,
+                early_stopping_threshold=args_cli.min_delta
+            ),
+            EpochNormalizedLogger(writer),
+            MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512)
+        ],
         compute_metrics=compute_metrics,
     )
 
