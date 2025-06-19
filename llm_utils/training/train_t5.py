@@ -454,7 +454,7 @@ def main():
     from transformers import Seq2SeqTrainer as HFSeq2SeqTrainer, TrainerCallback
     # Custom callback to log model output/label shapes on prediction step
     class PredictionShapeLoggerCallback(TrainerCallback):
-        def on_prediction_step(self, args, state, control, prediction_step_output=None, **kwargs):
+        def on_prediction_step(self, args, state, control, prediction_step_output, **kwargs):
             logger = logging.getLogger(__name__)
             if prediction_step_output is not None:
                 generated_tokens, _, labels = prediction_step_output
