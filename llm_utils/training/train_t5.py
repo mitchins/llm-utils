@@ -282,11 +282,6 @@ def main():
     import sys
 
     def compute_metrics(pred):
-        print("🧪 compute_metrics has been called!")  # This should show up or the process should terminate.
-        sys.exit("💥 Exiting from inside compute_metrics for debug purposes.")
-        import os
-        print(f"[📏] compute_metrics() called on rank {os.environ.get('RANK', '0')}")
-        print(f"[📊] Predictions size: {len(eval_preds.predictions)} | Labels size: {len(eval_preds.label_ids)}")
         rank_logger("info", f"🔍 compute_metrics invoked on rank {os.environ.get('RANK', '0')}")
         import numpy as np
         rank = int(os.environ.get("RANK", "0"))
@@ -512,8 +507,7 @@ def main():
                 early_stopping_threshold=args_cli.min_delta
             ),
             EpochNormalizedLogger(writer),
-            MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512),
-            PredictionShapeLoggerCallback(),
+            MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512)
         ],
         compute_metrics=compute_metrics,
     )
