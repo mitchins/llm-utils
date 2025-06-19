@@ -1,4 +1,5 @@
 import json
+import numpy as np  # Ensure this import is at the top
 import argparse
 from pathlib import Path
 from datasets import load_dataset, Dataset
@@ -207,6 +208,8 @@ def main():
     # Prepare model
     model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
     logger.info("✅ Model loaded.")
+    # Suppress warning about use_cache with gradient checkpointing
+    model.config.use_cache = False
 
     rouge_metric = evaluate.load("rouge")
     if args_cli.calculate_meteor:
@@ -272,6 +275,9 @@ def main():
 
     def compute_metrics(pred):
         import numpy as np
+        rank = int(os.environ.get("RANK", "0"))
+        if args_cli.debug:
+            logger.info(f"🧪 compute_metrics invoked on rank {rank}")
         if args_cli.fields:
             field_specs = dict(item.split(":") for item in args_cli.fields.split(","))
             return compute_structured_metrics(pred, field_specs)
@@ -368,6 +374,13 @@ def main():
     logger.info(f"✅ Tokenization complete: train {len(train_dataset):,} examples, val {len(val_dataset):,} examples")
     train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
     val_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+
+    # Patch: Ensure labels are always torch tensors via numpy conversion
+    def labels_to_tensor(batch):
+        batch["labels"] = torch.tensor(np.array(batch["labels"]), dtype=torch.int64)
+        return batch
+    train_dataset = train_dataset.map(labels_to_tensor, batched=True)
+    val_dataset = val_dataset.map(labels_to_tensor, batched=True)
 
     model_name = args_cli.model_checkpoint.split("/")[-1]
     dataset_name = Path(args_cli.train_dataset_dir).stem
