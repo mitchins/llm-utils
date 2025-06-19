@@ -41,6 +41,7 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument("--debug", action="store_true", help="Enable debug output")
 parser.add_argument("--threads", type=int, default=1, help="Number of worker threads for dataset.map (default: 1)")
+parser.add_argument("--eval_steps", type=int, default=None, help="Force evaluation every N steps")
 parser.add_argument(
     "--gradient-accumulation-steps",
     type=int,
@@ -385,15 +386,17 @@ def main():
         base_batch_size = determine_batch_size(args_cli.model_checkpoint, False)
     logger.info(f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
 
-    # Estimate dynamic evaluation steps: prefer 1/3 epoch, clamp at 10k or 1 epoch
+    # Estimate dynamic evaluation steps: allow override with --eval_steps, else prefer 1/3 epoch, clamp at 10k or 1 epoch
     steps_per_epoch = len(train_dataset) // base_batch_size
-    # Prefer evaluating every 1/3 of an epoch, but clamp properly
-    third_epoch_steps = steps_per_epoch // 3
-    if third_epoch_steps >= 10000:
-        dynamic_eval_steps = third_epoch_steps
+    train_len = len(train_dataset)
+    if args_cli.eval_steps is not None:
+        dynamic_eval_steps = args_cli.eval_steps
+        logger.info(f"📏 Overriding eval steps: {dynamic_eval_steps}")
     else:
-        dynamic_eval_steps = min(steps_per_epoch, 10000)
-    print(f"🔢 Dynamically setting eval/save every {dynamic_eval_steps} steps (⅓ epoch preferred, clamped at 10k or 1 epoch).")
+        # Prefer evaluating every 1/3 of an epoch, but clamp properly
+        eval_steps = max(1, min(int(train_len * 1/3), 10_000))
+        dynamic_eval_steps = eval_steps
+        logger.info(f"🔢 Dynamically setting eval/save every {dynamic_eval_steps} steps (⅓ epoch preferred, clamped at 10k or 1 epoch).")
 
     if args_cli.fields:
         logger.info(f"🧪 Structured metric evaluation active: {args_cli.fields}")
