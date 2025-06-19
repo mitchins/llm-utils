@@ -405,41 +405,34 @@ def main():
     # Determine optimizer: Adafactor by default, AdamW if --disable-adafactor is set
     optim_type = "adamw_hf" if args_cli.disable_adafactor else "adafactor"
 
-    output_dir = args_cli.output_dir
-    batch_size = base_batch_size
-    num_train_epochs = args_cli.total_epochs
-    learning_rate = args_cli.learning_rate
-    logging_dir = f"logs/{args_cli.task_name}-{model_name}-{dataset_name}-bs{batch_size}-lr{learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-
-    training_args_kwargs = {
-        "output_dir": output_dir,
-        "evaluation_strategy": "epoch",
-        "per_device_train_batch_size": batch_size,
-        "per_device_eval_batch_size": batch_size,
-        "predict_with_generate": True,
-        "logging_dir": logging_dir,
-        "save_total_limit": 1,
-        "num_train_epochs": num_train_epochs,
-        "learning_rate": learning_rate,
-        "report_to": "none",
-    }
-
-    if is_main_process():
-        training_args_kwargs.update({
-            "metric_for_best_model": "eval_rougeL",
-            "load_best_model_at_end": True,
-            "save_strategy": "epoch",
-            "save_steps": None
-        })
-    else:
-        training_args_kwargs.update({
-            "metric_for_best_model": None,
-            "load_best_model_at_end": False,
-            "save_strategy": "no",
-            "save_steps": None
-        })
-
-    args = Seq2SeqTrainingArguments(**training_args_kwargs)
+    args = Seq2SeqTrainingArguments(
+        run_name=f"{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+        logging_dir=f"logs/{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+        output_dir=args_cli.output_dir,
+        per_device_train_batch_size=base_batch_size,
+        per_device_eval_batch_size=base_batch_size,
+        num_train_epochs=args_cli.total_epochs,
+        eval_strategy="steps",
+        eval_steps=dynamic_eval_steps,
+        save_strategy="steps",
+        save_steps=dynamic_eval_steps,
+        save_total_limit=15,
+        logging_steps=50,
+        report_to="tensorboard",
+        load_best_model_at_end=True,
+        metric_for_best_model="combined" if args_cli.calculate_meteor else "rougeL",
+        greater_is_better=True,
+        predict_with_generate=True,
+        fp16=args_cli.enable_fp16,
+        learning_rate=args_cli.learning_rate,
+        warmup_steps=args_cli.warm_up_steps,
+        lr_scheduler_type=args_cli.lr_scheduler_type,
+        gradient_accumulation_steps=args_cli.gradient_accumulation_steps,
+        deepspeed=args_cli.deepspeed,
+        optim=optim_type,
+        generation_max_length=min(args_cli.max_target_length, 256),
+        generation_num_beams=1
+    )
 
     # The run_name variable below is now redundant since it's incorporated above; remove if not used elsewhere.
     # run_name = f"{model_name}-{dataset_name}-bs{base_batch_size}-lr{args.learning_rate}-ws{args.warmup_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
@@ -488,18 +481,7 @@ def main():
                 rank_logger("debug", f"✅ Generation complete in {duration:.2f}s")
             return outputs
 
-    from transformers import DataCollatorForSeq2Seq, EarlyStoppingCallback
-    # Prepare rank-aware callbacks
-    callbacks = []
-    if is_main_process():
-        callbacks.append(EarlyStoppingCallback(
-            early_stopping_patience=args_cli.early_stopping_patience,
-            early_stopping_threshold=args_cli.min_delta
-        ))
-    callbacks.extend([
-        EpochNormalizedLogger(writer),
-        MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512)
-    ])
+    from transformers import DataCollatorForSeq2Seq
     trainer = TimingSeq2SeqTrainer(
         model=model,
         args=args,
@@ -507,7 +489,14 @@ def main():
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
         data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
-        callbacks=callbacks,
+        callbacks=[
+            EarlyStoppingCallback(
+                early_stopping_patience=args_cli.early_stopping_patience,
+                early_stopping_threshold=args_cli.min_delta
+            ),
+            EpochNormalizedLogger(writer),
+            MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512)
+        ],
         compute_metrics=compute_metrics,
     )
 
@@ -515,8 +504,11 @@ def main():
 
     writer.close()
 
+    # (Filtering log now occurs before split)
+
     # Save final model to versioned path (main process only)
-    if trainer.state.best_model_checkpoint is not None:
+    save_main = is_main_process() and trainer.state.best_model_checkpoint is not None
+    if save_main:
         rank_logger("info", f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
         root = Path(args_cli.output_dir)
         i = 1
