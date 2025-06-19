@@ -281,62 +281,36 @@ def main():
 
     import sys
 
-    def compute_metrics(pred):
-        rank_logger("info", f"🔍 compute_metrics invoked on rank {os.environ.get('RANK', '0')}")
-        import numpy as np
-        rank = int(os.environ.get("RANK", "0"))
-        if args_cli.debug:
-            rank_logger("info", f"🧪 compute_metrics invoked on rank {rank}")
+    def compute_metrics(eval_preds):
+        predictions, labels = eval_preds  # Unpack the tuple
+
+        # Ensure labels have pad_token_id instead of -100
+        labels = np.where(labels != -100, tokenizer.pad_token_id, labels)
+
+        # Decode predictions and labels
+        decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+        # Optionally format for rouge or meter as appropriate
+        metric_name = "rouge"
+        if args_cli.calculate_meteor:
+            metric_name = "meteor"
+        # If using structured fields, fallback to original logic
         if args_cli.fields:
             field_specs = dict(item.split(":") for item in args_cli.fields.split(","))
             metrics = compute_structured_metrics(eval_preds, field_specs)
             print(f"[✅] compute_metrics() completed on rank {os.environ.get('RANK', '0')}")
             return metrics
 
-        predictions = eval_preds.predictions
-        labels = eval_preds.label_ids
+        import nltk
+        if metric_name == "rouge":
+            decoded_preds = ["\n".join(nltk.sent_tokenize(pred.strip())) for pred in decoded_preds]
+            decoded_labels = ["\n".join(nltk.sent_tokenize(label.strip())) for label in decoded_labels]
 
-        # Handle case where predictions are logits instead of token IDs
-        if getattr(predictions, "ndim", None) == 3:  # shape: [batch, seq_len, vocab]
-            predictions = np.argmax(predictions, axis=-1)
-
-        # Clamp predictions to valid token ID range
-        vocab_size = tokenizer.vocab_size
-        predictions = np.clip(predictions, 0, vocab_size - 1)
-
-        try:
-            decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
-        except OverflowError as e:
-            rank_logger("error", "❌ Overflow during decoding. Saving raw predictions to 'debug_predictions.npy'.")
-            np.save("debug_predictions.npy", predictions)
-            raise e
-
-        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
-
-        decoded_preds = [pred.strip() for pred in decoded_preds]
-        decoded_labels = [label.strip() for label in decoded_labels]
-
-        result = rouge_metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
-
-        scale = 1.0 if args_cli.raw_metrics else 100.0
-
-        rouge1 = result['rouge1']['fmeasure'] * scale if isinstance(result['rouge1'], dict) else result['rouge1'] * scale
-        rouge2 = result['rouge2']['fmeasure'] * scale if isinstance(result['rouge2'], dict) else result['rouge2'] * scale
-        rougeL = result['rougeL']['fmeasure'] * scale if isinstance(result['rougeL'], dict) else result['rougeL'] * scale
-
-        metrics = {
-            "rouge1": rouge1,
-            "rouge2": rouge2,
-            "rougeL": rougeL,
-        }
-
-        if args_cli.calculate_meteor:
-            meteor_score = meteor_metric.compute(predictions=decoded_preds, references=decoded_labels)["meteor"] * scale
-            metrics["meteor"] = meteor_score
-            metrics["combined"] = 0.3 * rouge2 + 0.2 * rougeL + 0.5 * meteor_score
-
-        print(f"[✅] compute_metrics() completed on rank {os.environ.get('RANK', '0')}")
-        return metrics
+        # Use the correct metric object
+        metric = rouge_metric if metric_name == "rouge" else meteor_metric
+        result = metric.compute(predictions=decoded_preds, references=decoded_labels)
+        return result
 
     def report_memory():
         mem = psutil.Process().memory_info().rss / (1024 * 1024)
