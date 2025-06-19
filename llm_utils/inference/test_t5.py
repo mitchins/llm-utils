@@ -1,10 +1,9 @@
-
-
 import argparse
 import json
 from pathlib import Path
 import readline
 import atexit
+import torch
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from datasets import load_dataset, Dataset
@@ -12,15 +11,17 @@ from sklearn.metrics import precision_recall_fscore_support
 
 def load_model_and_tokenizer(model_path):
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_path)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_path).to("cuda" if torch.cuda.is_available() else "cpu")
     return model, tokenizer
 
-def generate_single(text, model, tokenizer, max_new_tokens=64, num_beams=1):
-    inputs = tokenizer(text, return_tensors="pt", truncation=True)
+def generate_single(text, model, tokenizer, max_new_tokens=64, num_beams=1, max_input_length=4096):
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=max_input_length)
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    print(f"🧾 Token count: {len(inputs['input_ids'][0])}")
     output_ids = model.generate(**inputs, max_new_tokens=max_new_tokens, num_beams=num_beams)
     return tokenizer.decode(output_ids[0], skip_special_tokens=True)
 
-def evaluate_bulk(dataset_path, model, tokenizer, text_field="input", target_field="output", max_new_tokens=64, num_beams=1, show_detail=False):
+def evaluate_bulk(dataset_path, model, tokenizer, text_field="input", target_field="output", max_new_tokens=64, num_beams=1, show_detail=False, max_input_length=4096):
     ds = load_dataset("json", data_files=dataset_path)["train"]
 
     predictions = []
@@ -30,7 +31,7 @@ def evaluate_bulk(dataset_path, model, tokenizer, text_field="input", target_fie
     for item in ds:
         input_text = item[text_field]
         ref = item.get(target_field, "")
-        pred = generate_single(input_text, model, tokenizer, max_new_tokens, num_beams).strip()
+        pred = generate_single(input_text, model, tokenizer, max_new_tokens, num_beams, max_input_length).strip()
 
         if show_detail:
             print(f"📝 Input: {input_text}")
@@ -54,6 +55,19 @@ def evaluate_bulk(dataset_path, model, tokenizer, text_field="input", target_fie
     )
     print(f"📊 Precision: {p:.3f}, Recall: {r:.3f}, F1: {f1:.3f}")
 
+def multiline_input(prompt=">>> "):
+    print(prompt + " (End with empty line)")
+    lines = []
+    while True:
+        try:
+            line = input()
+            if not line.strip():
+                break
+            lines.append(line)
+        except EOFError:
+            break
+    return "\n".join(lines)
+
 def main():
     HISTORY_PATH = ".t5_repl_history"
 
@@ -70,10 +84,12 @@ def main():
     parser.add_argument("--target-field", type=str, default="output")
     parser.add_argument("--max-new-tokens", type=int, default=64)
     parser.add_argument("--num-beams", type=int, default=1)
+    parser.add_argument("--max-input-length", type=int, default=4096)
     parser.add_argument("--detail", action="store_true", help="Show detailed output per row")
     args = parser.parse_args()
 
     model, tokenizer = load_model_and_tokenizer(args.model_path)
+    print(f"📏 Model supports up to {getattr(model.config, 'max_position_embeddings', '???')} tokens")
 
     if args.data_path:
         evaluate_bulk(
@@ -84,17 +100,18 @@ def main():
             args.target_field,
             args.max_new_tokens,
             args.num_beams,
-            args.detail
+            args.detail,
+            args.max_input_length
         )
     else:
         # Interactive REPL
         print("🧠 T5 REPL mode. Type input text to generate, Ctrl+C to exit.")
         while True:
             try:
-                text = input(">>> ").strip()
+                text = multiline_input("📜 Paste scene")
                 if not text:
                     continue
-                output = generate_single(text, model, tokenizer, args.max_new_tokens, args.num_beams)
+                output = generate_single(text, model, tokenizer, args.max_new_tokens, args.num_beams, args.max_input_length)
                 print(f"🤖 {output}")
             except KeyboardInterrupt:
                 print("\n👋 Exiting.")
