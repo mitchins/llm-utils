@@ -287,6 +287,13 @@ def main():
     def compute_metrics(eval_pred):
         import torch.distributed as dist
         from transformers.trainer_utils import EvalPrediction
+        import logging
+        logger = logging.getLogger(__name__)
+        # Debug log for number of predictions
+        try:
+            logger.debug(f"Computing metrics on {len(eval_pred[0])} predictions.")
+        except Exception as e:
+            logger.debug(f"Could not determine length of predictions for metrics: {e}")
 
         def actual_metric_fn(eval_pred):
             preds, labels = eval_pred
@@ -481,8 +488,10 @@ def main():
             if args:
                 rank_logger("debug", f"Per device batch size: {args.per_device_eval_batch_size}")
                 if hasattr(args, 'generation_max_length'):
-                    rank_logger("info", f"Max generation length: {args.generation_max_length}")
+                    rank_logger("info", f"Max generation length: {args.generation_max_length}")        
 
+    # === Trainer subclass: only save on rank 0 ===
+    from typing import Optional
     class TimingSeq2SeqTrainer(HFSeq2SeqTrainer):
         def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
             if self.args.predict_with_generate and not prediction_loss_only:
@@ -493,9 +502,15 @@ def main():
                 duration = time.time() - self._start_time
                 rank_logger("debug", f"✅ Generation complete in {duration:.2f}s")
             return outputs
+        
+        def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = True):
+            if getattr(self.args, "local_rank", -1) not in [-1, 0]:
+                rank_logger("info", f"[rank{getattr(self.args, 'local_rank', -1)}] Skipping save_model.")
+                return
+            super().save_model(output_dir, _internal_call)
 
     from transformers import DataCollatorForSeq2Seq
-    trainer = TimingSeq2SeqTrainer(
+    trainer = RankZeroOnlySaveTrainer(
         model=model,
         args=args,
         train_dataset=train_dataset,
