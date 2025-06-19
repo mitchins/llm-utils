@@ -491,7 +491,7 @@ def main():
     from transformers import DataCollatorForSeq2Seq, EarlyStoppingCallback
     # Prepare rank-aware callbacks
     callbacks = []
-    if rank == 0:
+    if is_main_process():
         callbacks.append(EarlyStoppingCallback(
             early_stopping_patience=args_cli.early_stopping_patience,
             early_stopping_threshold=args_cli.min_delta
