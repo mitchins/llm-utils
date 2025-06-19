@@ -12,6 +12,16 @@ from datetime import datetime
 from tqdm.auto import tqdm
 import psutil
 
+# === Default hyperparameter constants ===
+DEFAULT_WARMUP_STEPS = 500
+DEFAULT_LEARNING_RATE = 5e-5
+DEFAULT_TOTAL_EPOCHS = 30
+DEFAULT_VALIDATION_SIZE = 0.10
+DEFAULT_EARLY_STOPPING_PATIENCE = 15
+DEFAULT_MIN_DELTA = 0.1
+DEFAULT_MAX_INPUT_LENGTH = 512
+DEFAULT_MAX_TARGET_LENGTH = 128
+
 from transformers import EarlyStoppingCallback
 from .callbacks import EpochNormalizedLogger, MemoryUsageLogger, ManualEarlyStopCallback
 from .evaluation_utils import calculate_dynamic_eval_steps
@@ -46,13 +56,13 @@ parser.add_argument(
     help="Output directory for model and encoder (default: <task_name>_model)"
 )
 parser.add_argument("--clean", action="store_true", help="Remove output_dir before training if it exists")
-parser.add_argument("--total-epochs", type=int, default=30, help="Total number of training epochs (default: 30)")
+parser.add_argument("--total-epochs", type=int, default=DEFAULT_TOTAL_EPOCHS, help=f"Total number of training epochs (default: {DEFAULT_TOTAL_EPOCHS})")
 parser.add_argument("--model-checkpoint", type=str, default="t5-small", help="HuggingFace model checkpoint to use")
 parser.add_argument("--enable-fp16", action="store_true", help="Enable mixed precision (FP16) training (default: FP32/full precision)")
-parser.add_argument("--warm-up-steps", type=int, default=500, help="Number of warm-up steps for learning rate scheduler (set 0 for no warm-up)")
+parser.add_argument("--warm-up-steps", type=int, default=DEFAULT_WARMUP_STEPS, help=f"Number of warm-up steps for learning rate scheduler (set 0 for no warm-up, default: {DEFAULT_WARMUP_STEPS})")
 parser.add_argument(
-    "--learning-rate", type=float, default=5e-5,
-    help="Learning rate for optimizer (default: 5e-5)"
+    "--learning-rate", type=float, default=DEFAULT_LEARNING_RATE,
+    help=f"Learning rate for optimizer (default: {DEFAULT_LEARNING_RATE})"
 )
 parser.add_argument(
     "--lr-scheduler-type",
@@ -64,14 +74,14 @@ parser.add_argument(
 parser.add_argument(
     "--early-stopping-patience",
     type=int,
-    default=15,
-    help="Number of evaluations with no improvement before early stopping (default: 15)"
+    default=DEFAULT_EARLY_STOPPING_PATIENCE,
+    help=f"Number of evaluations with no improvement before early stopping (default: {DEFAULT_EARLY_STOPPING_PATIENCE})"
 )
 parser.add_argument(
-    "--min-delta", type=float, default=0.1,
-    help="Minimum absolute improvement on the monitored metric to reset early-stopping patience"
+    "--min-delta", type=float, default=DEFAULT_MIN_DELTA,
+    help=f"Minimum absolute improvement on the monitored metric to reset early-stopping patience (default: {DEFAULT_MIN_DELTA})"
 )
-parser.add_argument("--validation-size", type=float, default=0.10, help="Percentage of the dataset to use as validation set (default: 0.10)")
+parser.add_argument("--validation-size", type=float, default=DEFAULT_VALIDATION_SIZE, help=f"Percentage of the dataset to use as validation set (default: {DEFAULT_VALIDATION_SIZE})")
 parser.add_argument("--stratify-length", action="store_true", help="Stratify validation split by length of target output (token count or JSON element count)")
 parser.add_argument("--calculate-meteor", action="store_true", help="Enable calculation of METEOR metric during evaluation")
 parser.add_argument("--raw-metrics", action="store_true", help="Output ROUGE and METEOR as raw 0–1 values instead of percentages")
@@ -94,16 +104,19 @@ parser.add_argument(
     help="Name of the target text field"
 )
 parser.add_argument(
-    "--max-input-length", type=int, default=512,
-    help="Maximum input sequence length"
+    "--max-input-length", type=int, default=DEFAULT_MAX_INPUT_LENGTH,
+    help=f"Maximum input sequence length (default: {DEFAULT_MAX_INPUT_LENGTH})"
 )
 parser.add_argument(
-    "--max-target-length", type=int, default=128,
-    help="Maximum target sequence length"
+    "--max-target-length", type=int, default=DEFAULT_MAX_TARGET_LENGTH,
+    help=f"Maximum target sequence length (default: {DEFAULT_MAX_TARGET_LENGTH})"
 )
 
 # DeepSpeed argument
 parser.add_argument("--deepspeed", type=str, default=None, help="Path to DeepSpeed config JSON file (enables DeepSpeed training)")
+
+# Optimizer selection: allow disabling Adafactor
+parser.add_argument("--disable-adafactor", action="store_true", help="Use AdamW instead of Adafactor (default: Adafactor)")
 
 # New CLI arguments for HuggingFace datasets from disk
 parser.add_argument("--train-dataset-dir", type=str, help="Path to a HuggingFace dataset directory for training (saved with save_to_disk())")
@@ -379,6 +392,9 @@ def main():
     if args_cli.fields:
         logger.info(f"🧪 Structured metric evaluation active: {args_cli.fields}")
 
+    # Determine optimizer: Adafactor by default, AdamW if --disable-adafactor is set
+    optim_type = "adamw_hf" if args_cli.disable_adafactor else "adafactor"
+
     args = Seq2SeqTrainingArguments(
         run_name=f"{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
         logging_dir=f"logs/{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
@@ -403,6 +419,7 @@ def main():
         lr_scheduler_type=args_cli.lr_scheduler_type,
         gradient_accumulation_steps=args_cli.gradient_accumulation_steps,
         deepspeed=args_cli.deepspeed,
+        optim=optim_type,
     )
 
     # The run_name variable below is now redundant since it's incorporated above; remove if not used elsewhere.
