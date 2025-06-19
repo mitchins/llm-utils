@@ -282,34 +282,44 @@ def main():
     import sys
 
     def compute_metrics(eval_preds):
-        predictions, labels = eval_preds  # Unpack the tuple
+        import numpy as np
+        import nltk
 
-        # Ensure labels have pad_token_id instead of -100
+        # Handle EvalPrediction object safely
+        try:
+            predictions = eval_preds.predictions
+            labels = eval_preds.label_ids
+        except AttributeError:
+            predictions, labels = eval_preds
+
+        # Handle case where predictions are logits
+        if predictions.ndim == 3:
+            # [batch, seq_len, vocab] → argmax over vocab
+            predictions = np.argmax(predictions, axis=-1)
+
+        # Replace ignored index with pad token
         labels = np.where(labels != -100, tokenizer.pad_token_id, labels)
 
         # Decode predictions and labels
         decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
         decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 
-        # Optionally format for rouge or meter as appropriate
-        metric_name = "rouge"
-        if args_cli.calculate_meteor:
-            metric_name = "meteor"
-        # If using structured fields, fallback to original logic
-        if args_cli.fields:
-            field_specs = dict(item.split(":") for item in args_cli.fields.split(","))
-            metrics = compute_structured_metrics(eval_preds, field_specs)
-            print(f"[✅] compute_metrics() completed on rank {os.environ.get('RANK', '0')}")
-            return metrics
+        # Normalize for ROUGE/METEOR: newline after each sentence
+        decoded_preds = ["\n".join(nltk.sent_tokenize(pred.strip())) for pred in decoded_preds]
+        decoded_labels = ["\n".join(nltk.sent_tokenize(label.strip())) for label in decoded_labels]
 
-        import nltk
-        if metric_name == "rouge":
-            decoded_preds = ["\n".join(nltk.sent_tokenize(pred.strip())) for pred in decoded_preds]
-            decoded_labels = ["\n".join(nltk.sent_tokenize(label.strip())) for label in decoded_labels]
+        # Compute metrics — you can switch here
+        if args_cli.metric == "meteor":
+            result = meteor_metric.compute(predictions=decoded_preds, references=decoded_labels)
+        else:  # Default to ROUGE
+            result = rouge_metric.compute(
+                predictions=decoded_preds,
+                references=decoded_labels,
+                use_stemmer=True,
+            )
 
-        # Use the correct metric object
-        metric = rouge_metric if metric_name == "rouge" else meteor_metric
-        result = metric.compute(predictions=decoded_preds, references=decoded_labels)
+        # Optional: round and label keys
+        result = {k: round(v * 100, 2) if isinstance(v, float) else v for k, v in result.items()}
         return result
 
     def report_memory():
@@ -436,10 +446,10 @@ def main():
 
     class PredictionShapeLoggerCallback(TrainerCallback):
         def on_prediction_step(self, args, state, control, **kwargs):
-            rank_logger("info", f"Available kwargs: {list(kwargs.keys())}")
+            rank_logger("debug", f"Available kwargs: {list(kwargs.keys())}")
             if 'model' in kwargs:
                 model = kwargs['model']
-                rank_logger("info", f"Model: {type(model)}")
+                rank_logger("debug", f"Model: {type(model)}")
             if 'inputs' in kwargs:
                 inputs = kwargs['inputs']
                 if isinstance(inputs, dict):
@@ -450,9 +460,9 @@ def main():
                     pass
             if state:
                 step = getattr(state, 'prediction_step', None)
-                rank_logger("info", f"Current step: {step if step is not None else 'N/A'}")
+                rank_logger("debug", f"Current step: {step if step is not None else 'N/A'}")
             if args:
-                rank_logger("info", f"Per device batch size: {args.per_device_eval_batch_size}")
+                rank_logger("debug", f"Per device batch size: {args.per_device_eval_batch_size}")
                 if hasattr(args, 'generation_max_length'):
                     rank_logger("info", f"Max generation length: {args.generation_max_length}")
 
@@ -460,11 +470,11 @@ def main():
         def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
             if self.args.predict_with_generate and not prediction_loss_only:
                 self._start_time = time.time()
-                rank_logger("info", "🔁 Generation started...")
+                rank_logger("debug", "🔁 Generation started...")
             outputs = super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
             if self.args.predict_with_generate and not prediction_loss_only:
                 duration = time.time() - self._start_time
-                rank_logger("info", f"✅ Generation complete in {duration:.2f}s")
+                rank_logger("debug", f"✅ Generation complete in {duration:.2f}s")
             return outputs
 
     from transformers import DataCollatorForSeq2Seq
