@@ -451,7 +451,20 @@ def main():
     # Enable gradient checkpointing to save memory (especially helpful with DeepSpeed)
     model.gradient_checkpointing_enable()
     import time
-    from transformers import Seq2SeqTrainer as HFSeq2SeqTrainer
+    from transformers import Seq2SeqTrainer as HFSeq2SeqTrainer, TrainerCallback
+    # Custom callback to log model output/label shapes on prediction step
+    class PredictionShapeLoggerCallback(TrainerCallback):
+        def on_prediction_step(self, args, state, control, inputs, prediction_step_output=None, **kwargs):
+            logger = logging.getLogger(__name__)
+            if prediction_step_output is not None:
+                generated_tokens, _, labels = prediction_step_output
+                if generated_tokens is not None:
+                    logger.info(f"[📏] Generated tokens shape: {getattr(generated_tokens, 'shape', 'N/A')}")
+                if labels is not None:
+                    logger.info(f"[📏] Labels shape: {getattr(labels, 'shape', 'N/A')}")
+            else:
+                logger.warning("[⚠️] prediction_step_output is None.")
+
     class TimingSeq2SeqTrainer(HFSeq2SeqTrainer):
         def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
             if self.args.predict_with_generate and not prediction_loss_only:
@@ -462,17 +475,6 @@ def main():
                 duration = time.time() - self._start_time
                 print(f"[✅] Generation complete in {duration:.2f}s")
             return outputs
-
-        # Custom callback to log model output size if present
-        def on_prediction_step(self, args, state, control, inputs, outputs=None, **kwargs):
-            input_len = inputs['input_ids'].shape[1]
-            label_len = inputs['labels'].shape[1] if 'labels' in inputs else None
-            output_len = None
-            if outputs is not None and isinstance(outputs, tuple):
-                output_tensor = outputs[0]
-                if hasattr(output_tensor, 'shape'):
-                    output_len = output_tensor.shape
-            print(f"[🧮] on_prediction_step: input len = {input_len}, label len = {label_len}, output shape = {output_len}")
 
     from transformers import DataCollatorForSeq2Seq
     trainer = TimingSeq2SeqTrainer(
@@ -488,7 +490,8 @@ def main():
                 early_stopping_threshold=args_cli.min_delta
             ),
             EpochNormalizedLogger(writer),
-            MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512)
+            MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512),
+            PredictionShapeLoggerCallback(),
         ],
         compute_metrics=compute_metrics if int(os.environ.get("RANK", "0")) == 0 else None,
     )
