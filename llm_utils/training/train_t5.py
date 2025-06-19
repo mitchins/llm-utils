@@ -399,9 +399,6 @@ def main():
     # Determine optimizer: Adafactor by default, AdamW if --disable-adafactor is set
     optim_type = "adamw_hf" if args_cli.disable_adafactor else "adafactor"
 
-    # Determine local_rank for distributed-aware argument control
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-
     args = Seq2SeqTrainingArguments(
         run_name=f"{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
         logging_dir=f"logs/{args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{args_cli.learning_rate}-ws{args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
@@ -409,15 +406,14 @@ def main():
         per_device_train_batch_size=base_batch_size,
         per_device_eval_batch_size=base_batch_size,
         num_train_epochs=args_cli.total_epochs,
-        # Use ternary logic for distributed runs
-        load_best_model_at_end=True if local_rank == 0 else False,
-        evaluation_strategy="steps" if local_rank == 0 else "no",
-        save_strategy="steps" if local_rank == 0 else "no",
+        eval_strategy="steps",
         eval_steps=dynamic_eval_steps,
+        save_strategy="steps",
         save_steps=dynamic_eval_steps,
         save_total_limit=15,
         logging_steps=50,
         report_to="tensorboard",
+        load_best_model_at_end=True,
         metric_for_best_model="combined" if args_cli.calculate_meteor else "rougeL",
         greater_is_better=True,
         predict_with_generate=True,
