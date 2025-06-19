@@ -433,7 +433,6 @@ def main():
         optim=optim_type,
         generation_max_length=min(args_cli.max_target_length, 256),
         generation_num_beams=1,
-        should_save=(rank == 0),
     )
     # Rank-specific overrides
     if rank == 0:
@@ -528,13 +527,8 @@ def main():
 
     writer.close()
 
-    # (Filtering log now occurs before split)
-
     # Save final model to versioned path (main process only)
-    # Only save final model on main process (should_save handles this now)
-    # save_main = is_main_process() and trainer.state.best_model_checkpoint is not None
-    save_main = trainer.args.should_save and trainer.state.best_model_checkpoint is not None
-    if save_main:
+    if trainer.state.best_model_checkpoint is not None:
         rank_logger("info", f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
         root = Path(args_cli.output_dir)
         i = 1
