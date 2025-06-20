@@ -415,7 +415,7 @@ def main():
 
     # --- Eval/save strategy logic ---
     if args_cli.eval_strategy == "epoch":
-        evaluation_strategy = "epoch"
+        eval_strategy = "epoch"
         save_strategy = "epoch"
         eval_steps = None
         save_steps = None
@@ -428,7 +428,7 @@ def main():
         steps_per_epoch = math.ceil(len(train_dataset) / effective_batch_size)
         eval_steps = max(min(steps_per_epoch, 10_000) // 3, 1)
         save_steps = eval_steps
-        evaluation_strategy = "steps"
+        eval_strategy = "steps"
         save_strategy = "steps"
         rank_logger("info", f"🔢 Using dynamic step-based evaluation/checkpointing every {eval_steps} steps (--eval_strategy=auto).")
     # Allow manual override of eval_steps if set
@@ -450,7 +450,7 @@ def main():
         per_device_train_batch_size=base_batch_size,
         per_device_eval_batch_size=base_batch_size,
         num_train_epochs=args_cli.total_epochs,
-        evaluation_strategy=evaluation_strategy,
+        eval_strategy=eval_strategy,
         save_strategy=save_strategy,
         eval_steps=eval_steps,
         save_steps=save_steps,
