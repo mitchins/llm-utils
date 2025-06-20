@@ -43,6 +43,12 @@ parser.add_argument("--debug", action="store_true", help="Enable debug output")
 parser.add_argument("--threads", type=int, default=1, help="Number of worker threads for dataset.map (default: 1)")
 parser.add_argument("--eval_steps", type=int, default=None, help="Force evaluation every N steps")
 parser.add_argument(
+    "--eval_strategy",
+    choices=["auto", "epoch"],
+    default="auto",
+    help="Use dynamic step-based checkpointing ('auto') or eval/save every epoch ('epoch').",
+)
+parser.add_argument(
     "--gradient-accumulation-steps",
     type=int,
     default=1,
@@ -407,17 +413,28 @@ def main():
         base_batch_size = determine_batch_size(args_cli.model_checkpoint, False)
     rank_logger("info", f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
 
-    # Estimate dynamic evaluation steps: allow override with --eval_steps, else prefer 1/3 epoch, clamp at 10k or 1 epoch
+    # --- Eval/save strategy logic ---
     steps_per_epoch = len(train_dataset) // base_batch_size
-    train_len = len(train_dataset)
-    if args_cli.eval_steps is not None:
-        dynamic_eval_steps = args_cli.eval_steps
-        rank_logger("info", f"📏 Overriding eval steps: {dynamic_eval_steps}")
+    effective_batch_size = base_batch_size
+    if args_cli.eval_strategy == "epoch":
+        evaluation_strategy = "epoch"
+        save_strategy = "epoch"
+        eval_steps = None
+        save_steps = None
+        rank_logger("info", "🔁 Using epoch-based evaluation and checkpointing (--eval_strategy=epoch).")
     else:
         # Prefer evaluating every 1/3 of an epoch, but clamp properly
-        eval_steps = max(1, min(int(train_len * 1/3), 10_000))
-        dynamic_eval_steps = eval_steps
-        rank_logger("info", f"🔢 Dynamically setting eval/save every {dynamic_eval_steps} steps (⅓ epoch preferred, clamped at 10k or 1 epoch).")
+        steps_per_epoch = len(train_dataset) // effective_batch_size
+        eval_steps = min(int(steps_per_epoch * 0.33), 10_000)
+        save_steps = eval_steps
+        evaluation_strategy = "steps"
+        save_strategy = "steps"
+        rank_logger("info", f"🔢 Using dynamic step-based evaluation/checkpointing every {eval_steps} steps (--eval_strategy=auto).")
+    # Allow manual override of eval_steps if set
+    if args_cli.eval_steps is not None and args_cli.eval_strategy != "epoch":
+        eval_steps = args_cli.eval_steps
+        save_steps = args_cli.eval_steps
+        rank_logger("info", f"📏 Overriding eval/save steps: {eval_steps}")
 
     if args_cli.fields:
         rank_logger("info", f"🧪 Structured metric evaluation active: {args_cli.fields}")
@@ -432,10 +449,10 @@ def main():
         per_device_train_batch_size=base_batch_size,
         per_device_eval_batch_size=base_batch_size,
         num_train_epochs=args_cli.total_epochs,
-        eval_strategy="steps",
-        eval_steps=dynamic_eval_steps,
-        save_strategy="steps",
-        save_steps=dynamic_eval_steps,
+        evaluation_strategy=evaluation_strategy,
+        save_strategy=save_strategy,
+        eval_steps=eval_steps,
+        save_steps=save_steps,
         save_total_limit=15,
         logging_steps=50,
         report_to="tensorboard",
