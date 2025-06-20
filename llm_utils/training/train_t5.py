@@ -414,8 +414,6 @@ def main():
     rank_logger("info", f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
 
     # --- Eval/save strategy logic ---
-    steps_per_epoch = len(train_dataset) // base_batch_size
-    effective_batch_size = base_batch_size
     if args_cli.eval_strategy == "epoch":
         evaluation_strategy = "epoch"
         save_strategy = "epoch"
@@ -423,9 +421,12 @@ def main():
         save_steps = None
         rank_logger("info", "🔁 Using epoch-based evaluation and checkpointing (--eval_strategy=epoch).")
     else:
-        # Prefer evaluating every 1/3 of an epoch, but clamp properly
-        steps_per_epoch = len(train_dataset) // effective_batch_size
-        eval_steps = min(int(steps_per_epoch * 0.33), 10_000)
+        # Improved eval/save interval calculation for "auto" strategy
+        import math
+        import torch
+        effective_batch_size = args_cli.per_device_train_batch_size * args_cli.gradient_accumulation_steps * torch.distributed.get_world_size()
+        steps_per_epoch = math.ceil(len(train_dataset) / effective_batch_size)
+        eval_steps = max(min(steps_per_epoch, 10_000) // 3, 1)
         save_steps = eval_steps
         evaluation_strategy = "steps"
         save_strategy = "steps"
