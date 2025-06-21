@@ -1,6 +1,6 @@
 [project]
 name = "llm-utils"
-version = "0.6.68"
+version = "0.7.0"
 description = "Lightweight utilities for LLM data parsing and training"
 authors = [
     { name="Mitchell Currie" }
@@ -40,3 +40,4 @@ test-bert = "llm_utils.inference.test_bert:main"
 train-t5 = "llm_utils.training.train_t5:main"
 test-t5 = "llm_utils.inference.test_t5:main"
 prepare-dataset = "llm_utils.training.prepare_dataset:main"
+llm-request = "llm_utils.interfacing.llm_request:main"
