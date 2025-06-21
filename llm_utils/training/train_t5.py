@@ -32,6 +32,21 @@ import torch
 import torch.distributed as dist
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# Default min_delta values for early stopping
+DEFAULT_MIN_DELTAS = {
+    "combined": 0.01,
+    "rougeL": 0.005
+}
+
+def default_stopping_delta(args):
+    """
+    Returns the default minimum delta for early stopping based on whether METEOR is enabled.
+    """
+    if args.calculate_meteor:
+        return DEFAULT_MIN_DELTAS["combined"]
+    else:
+        return DEFAULT_MIN_DELTAS["rougeL"]
+
 # Global counters for input length filtering
 total_examples = 0
 dropped_examples = 0
@@ -87,7 +102,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--min-delta", type=float, default=DEFAULT_MIN_DELTA,
-    help=f"Minimum absolute improvement on the monitored metric to reset early-stopping patience (default: {DEFAULT_MIN_DELTA})"
+    help=f"Minimum absolute improvement to reset early-stopping patience (default: {DEFAULT_MIN_DELTAS['combined']} if METEOR enabled, else {DEFAULT_MIN_DELTAS['rougeL']})"
 )
 parser.add_argument("--validation-size", type=float, default=DEFAULT_VALIDATION_SIZE, help=f"Percentage of the dataset to use as validation set (default: {DEFAULT_VALIDATION_SIZE})")
 parser.add_argument("--stratify-length", action="store_true", help="Stratify validation split by length of target output (token count or JSON element count)")
@@ -538,7 +553,7 @@ def main():
         callbacks=[
             EarlyStoppingCallback(
                 early_stopping_patience=args_cli.early_stopping_patience,
-                early_stopping_threshold=args_cli.min_delta
+                early_stopping_threshold=args_cli.min_delta if args_cli.min_delta is not None else default_stopping_delta(args_cli),
             ),
             EpochNormalizedLogger(writer),
             MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512)
