@@ -181,6 +181,7 @@ def main():
                         help="Optional comma-separated list of labels to clamp to. If not provided, all seen labels are used.")
     # New argument for text field
     parser.add_argument("--text-field", type=str, default="text", help="Name of the input text field (default: 'text')")
+    parser.add_argument("--alternate_field", type=str, default=None)
     parser.add_argument("--logging-dir", type=str, default="logs", help="Directory for TensorBoard logs")
     parser.add_argument("--stratify", action="store_true", help="Enable stratified split by label for eval set")
     parser.add_argument("--batch-size", type=int, default=None, help="Override batch size (default is auto-detected)")
@@ -191,26 +192,51 @@ def main():
     random.seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
-    data_path = Path(args.data_path)
-    if not data_path.exists():
-        parser.error(f"❌ Provided data path does not exist: {data_path}")
-    if len(sys.argv) == 1:
-        parser.print_help()
-        exit(0)
-    if args.use_focal_loss and args.focus_weak_classes:
-        raise ValueError("❌ --use-focal-loss and --focus-weak-classes cannot be enabled at the same time. Please choose only one.")
-
-    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
-
-    # data_path = Path(args.data_path)  # Removed: now assigned above
-    if data_path.suffix == ".jsonl":
-        df = load_and_filter_dataframe(data_path=data_path, label_field=args.label_field)
-    elif data_path.suffix == ".csv":
-        df = pd.read_csv(data_path)
-    elif data_path.suffix == ".tsv":
-        df = pd.read_csv(data_path, sep="\t")
+    # --- Data loading logic supporting HuggingFace datasets ---
+    from datasets import load_dataset
+    # Support both "hf.co/" and legacy "hf:" prefixes for HuggingFace datasets
+    if args.data_path.startswith("hf.co/"):
+        hf_dataset_name = args.data_path[len("hf.co/") :]
+        dataset = load_dataset(hf_dataset_name, split='train')
+        eval_ratio = getattr(args, 'eval_ratio', 0.1)
+        train_test_split = dataset.train_test_split(test_size=eval_ratio, seed=args.seed)
+        train_dataset = train_test_split['train']
+        eval_dataset = train_test_split['test']
+        df = pd.DataFrame(train_dataset)
+        eval_df = pd.DataFrame(eval_dataset)
+    elif args.data_path.startswith("hf:"):
+        parts = args.data_path.split(":")
+        if len(parts) != 3:
+            raise ValueError("Expected format: hf:<dataset_name>:<split>")
+        _, dataset_name, dataset_split = parts
+        # Always load the "train" split and perform our own train_test_split for eval
+        dataset = load_dataset(dataset_name, split="train")
+        split = dataset.train_test_split(test_size=0.1, seed=args.seed)
+        train_dataset = split["train"]
+        eval_dataset = split["test"]
+        # Convert to pandas DataFrame for downstream compatibility
+        df = pd.DataFrame(train_dataset)
+        eval_df = pd.DataFrame(eval_dataset)
     else:
-        raise ValueError(f"Unsupported file type: {data_path.suffix}")
+        data_path = Path(args.data_path)
+        if not data_path.exists():
+            parser.error(f"❌ Provided data path does not exist: {data_path}")
+        if len(sys.argv) == 1:
+            parser.print_help()
+            exit(0)
+        if args.use_focal_loss and args.focus_weak_classes:
+            raise ValueError("❌ --use-focal-loss and --focus-weak-classes cannot be enabled at the same time. Please choose only one.")
+
+        logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
+
+        if data_path.suffix == ".jsonl":
+            df = load_and_filter_dataframe(data_path=data_path, label_field=args.label_field)
+        elif data_path.suffix == ".csv":
+            df = pd.read_csv(data_path)
+        elif data_path.suffix == ".tsv":
+            df = pd.read_csv(data_path, sep="\t")
+        else:
+            raise ValueError(f"Unsupported file type: {data_path.suffix}")
 
     # --- Label list logic ---
     label_list = None
@@ -299,39 +325,41 @@ def main():
         min_label, max_label = df[label_column_internal].min(), df[label_column_internal].max()
         logger.debug(f"✅ Label index range: {min_label} to {max_label}")
 
-    # Conditional split logic for train/eval
-    if args.balance_class_ratio:
-        df = df.sample(frac=1, random_state=42).reset_index(drop=True)  # shuffle once
-        eval_indices = list(range(0, len(df), 10))
-        train_indices = [i for i in range(len(df)) if i not in eval_indices]
-        train_df = df.iloc[train_indices].reset_index(drop=True)
-        eval_df = df.iloc[eval_indices].reset_index(drop=True)
-        logger.info(f"📊 Using 1-in-10 slicing for eval split (balanced set).")
-    elif args.stratify:
-        from sklearn.model_selection import train_test_split
-        if df[args.label_field].nunique() > 1 and all(df[args.label_field].value_counts() >= 2):
-            train_df, eval_df = train_test_split(
-                df,
-                test_size=0.1,
-                stratify=df[args.label_field],
-                random_state=args.seed,
-            )
-            train_df = train_df.reset_index(drop=True)
-            eval_df = eval_df.reset_index(drop=True)
-            logger.info("📊 Using stratified split for eval set.")
+    # Conditional split logic for train/eval, only if not HuggingFace dataset
+    if not (args.data_path.startswith("hf:") or args.data_path.startswith("hf.co/")):
+        if args.balance_class_ratio:
+            df = df.sample(frac=1, random_state=42).reset_index(drop=True)  # shuffle once
+            eval_indices = list(range(0, len(df), 10))
+            train_indices = [i for i in range(len(df)) if i not in eval_indices]
+            train_df = df.iloc[train_indices].reset_index(drop=True)
+            eval_df = df.iloc[eval_indices].reset_index(drop=True)
+            logger.info(f"📊 Using 1-in-10 slicing for eval split (balanced set).")
+        elif args.stratify:
+            from sklearn.model_selection import train_test_split
+            if df[args.label_field].nunique() > 1 and all(df[args.label_field].value_counts() >= 2):
+                train_df, eval_df = train_test_split(
+                    df,
+                    test_size=0.1,
+                    stratify=df[args.label_field],
+                    random_state=args.seed,
+                )
+                train_df = train_df.reset_index(drop=True)
+                eval_df = eval_df.reset_index(drop=True)
+                logger.info("📊 Using stratified split for eval set.")
+            else:
+                logger.warning("⚠️ Stratified split requested but not enough samples per class. Falling back to random split.")
+                dataset = Dataset.from_pandas(df)
+                split = dataset.train_test_split(test_size=0.1, seed=args.seed)
+                train_df = split["train"].to_pandas()
+                eval_df = split["test"].to_pandas()
+                logger.info("📊 Using HuggingFace random split for eval set (fallback).")
         else:
-            logger.warning("⚠️ Stratified split requested but not enough samples per class. Falling back to random split.")
             dataset = Dataset.from_pandas(df)
             split = dataset.train_test_split(test_size=0.1, seed=args.seed)
             train_df = split["train"].to_pandas()
             eval_df = split["test"].to_pandas()
-            logger.info("📊 Using HuggingFace random split for eval set (fallback).")
-    else:
-        dataset = Dataset.from_pandas(df)
-        split = dataset.train_test_split(test_size=0.1, seed=args.seed)
-        train_df = split["train"].to_pandas()
-        eval_df = split["test"].to_pandas()
-        logger.info("📊 Using HuggingFace random split for eval set (unbalanced set).")
+            logger.info("📊 Using HuggingFace random split for eval set (unbalanced set).")
+    # If HuggingFace dataset, train_df and eval_df were already set above
 
     # --- Save eval dataset to JSONL ---
     eval_jsonl_path = output_dir / "last_eval_set.jsonl"
@@ -347,26 +375,37 @@ def main():
 
     def tokenize_fn(example):
         max_length = 1024 if "deberta" in model_checkpoint.lower() else 512
-        text_a = example[args.text_field]
-        text_b = example.get("alternate")  # None if not present
-        return tokenizer(text_a, text_b, truncation=True, max_length=max_length)
+        return tokenizer(
+            example[args.text_field],
+            example[args.alternate_field] if args.alternate_field is not None else None,
+            truncation=True,
+            max_length=max_length
+        )
 
     # --- Optional holdout evaluation set ---
     monitor_eval_loader = None
     if args.evaluation_path:
         logger.info(f"🧪 Loading holdout monitoring set: {args.evaluation_path}")
-        eval_path = Path(args.evaluation_path)
-        if eval_path.suffix == ".jsonl":
-            holdout_df = load_and_filter_dataframe(data_path=eval_path, label_field=args.label_field)
-        elif eval_path.suffix == ".csv":
-            holdout_df = pd.read_csv(eval_path)
-        elif eval_path.suffix == ".tsv":
-            holdout_df = pd.read_csv(eval_path, sep="\t")
+        if args.data_path.startswith("hf.co/"):
+            hf_dataset_name = args.data_path[len("hf.co/") :]
+            holdout_dataset = load_dataset(hf_dataset_name, split=args.evaluation_path)
+            holdout_df = pd.DataFrame(holdout_dataset)
+            holdout_df = holdout_df[holdout_df[args.label_field].isin(label_list)].reset_index(drop=True)
+            holdout_df[label_column_internal] = label_encoder.transform(holdout_df[args.label_field])
+            holdout_dataset = Dataset.from_pandas(holdout_df)
         else:
-            raise ValueError(f"Unsupported evaluation file type: {eval_path.suffix}")
-        holdout_df = holdout_df[holdout_df[args.label_field].isin(label_list)].reset_index(drop=True)
-        holdout_df[label_column_internal] = label_encoder.transform(holdout_df[args.label_field])
-        holdout_dataset = Dataset.from_pandas(holdout_df)
+            eval_path = Path(args.evaluation_path)
+            if eval_path.suffix == ".jsonl":
+                holdout_df = load_and_filter_dataframe(data_path=eval_path, label_field=args.label_field)
+            elif eval_path.suffix == ".csv":
+                holdout_df = pd.read_csv(eval_path)
+            elif eval_path.suffix == ".tsv":
+                holdout_df = pd.read_csv(eval_path, sep="\t")
+            else:
+                raise ValueError(f"Unsupported evaluation file type: {eval_path.suffix}")
+            holdout_df = holdout_df[holdout_df[args.label_field].isin(label_list)].reset_index(drop=True)
+            holdout_df[label_column_internal] = label_encoder.transform(holdout_df[args.label_field])
+            holdout_dataset = Dataset.from_pandas(holdout_df)
         tokenized_holdout = holdout_dataset.map(tokenize_fn, batched=True)
         tokenized_holdout = tokenized_holdout.rename_column(label_column_internal, "labels")
         tokenized_holdout.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
