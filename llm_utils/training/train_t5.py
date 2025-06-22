@@ -176,18 +176,13 @@ def main():
     rank_logger("info", "✅ Tokenizer loaded.")
 
     # Only load from disk (HuggingFace datasets), or from CSV/JSON if specified
-    from pathlib import Path
-    train_path = Path(args_cli.train_dataset_dir)
-    if train_path.suffix == ".csv":
-        import pandas as pd
+    # Load train dataset: handle .jsonl, .csv, or dataset dir
+    if args_cli.train_dataset_dir.endswith(".jsonl"):
+        rank_logger("info", "📄 Detected JSONL format for training dataset.")
+        train_dataset = load_dataset("json", data_files=args_cli.train_dataset_dir, split="train")
+    elif args_cli.train_dataset_dir.endswith(".csv"):
         rank_logger("info", "📄 Detected CSV format for training dataset.")
-        df = pd.read_csv(train_path)
-        train_dataset = Dataset.from_pandas(df)
-    elif train_path.suffix == ".json":
-        import pandas as pd
-        rank_logger("info", "📄 Detected JSON format for training dataset.")
-        df = pd.read_json(train_path)
-        train_dataset = Dataset.from_pandas(df)
+        train_dataset = load_dataset("csv", data_files=args_cli.train_dataset_dir, split="train")
     else:
         rank_logger("info", "📂 Loading HuggingFace dataset from disk...")
         train_dataset = Dataset.load_from_disk(args_cli.train_dataset_dir)
