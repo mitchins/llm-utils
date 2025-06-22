@@ -214,6 +214,15 @@ def main():
             else:
                 raise ValueError(f"Unsupported evaluation file type: {eval_path.suffix}")
 
+    # --- Dataset statistics logging ---
+    from collections import Counter
+    def log_dataset_stats(name, dataset, label_field):
+        if dataset is None:
+            return
+        label_counts = Counter(dataset[label_field])
+        logger.info(f"📦 {name} set: {len(dataset)} examples")
+        logger.info(f"🧮 {name} label distribution: {dict(label_counts)}")
+
     # --- Label list logic ---
     # Get label list from argument or from dataset
     label_list = None
@@ -264,6 +273,10 @@ def main():
         for tone in label_list:
             logger.info(f"     {tone:<12}: {final_counts.get(tone, 0)}")
         logger.info(f"   Total training samples: {len(train_dataset)}")
+    # Log stats for raw train/eval datasets before encoding or filtering
+    log_dataset_stats("Train", train_dataset, args.label_field)
+    log_dataset_stats("Eval", eval_dataset, args.label_field)
+
     # Encode labels as classification label
     output_dir = Path(args.output_dir)
     if args.clean and output_dir.exists():
@@ -308,6 +321,9 @@ def main():
         eval_dataset = eval_dataset.filter(lambda x: x[args.label_field] in label_list)
         eval_dataset = eval_dataset.map(add_label_index)
         val_dataset = eval_dataset
+
+    # Log stats for validation set if present
+    log_dataset_stats("Validation", val_dataset, args.label_field)
     # Optionally save eval set (for reference)
     eval_jsonl_path = output_dir / "last_eval_set.jsonl"
     val_dataset.to_json(str(eval_jsonl_path))
