@@ -1,3 +1,12 @@
+# Helper function to tokenize datasets
+def tokenize_dataset(dataset, preprocess_fn, args, desc):
+    return dataset.map(
+        preprocess_fn,
+        batched=True,
+        num_proc=args.threads,
+        remove_columns=[args.input_col, args.target_col],
+        desc=desc,
+    )
 import json
 import numpy as np  # Ensure this import is at the top
 import argparse
@@ -12,6 +21,8 @@ import os
 from datetime import datetime
 from tqdm.auto import tqdm
 import psutil
+import math
+import torch
 
 # === Default hyperparameter constants ===
 DEFAULT_WARMUP_STEPS = 500
@@ -388,30 +399,11 @@ def main():
     report_memory()
     if not is_tokenized:
         rank_logger("info", "🔄 Dataset not yet tokenized — applying preprocessing...")
-        train_dataset = train_dataset.map(
-            preprocess_t5,
-            batched=True,
-            num_proc=args_cli.threads,
-            remove_columns=[args_cli.input_col, args_cli.target_col],
-            desc="🧠 Tokenizing train set",
-        )
-        # Always preprocess test (used during training metrics)
-        test_dataset = test_dataset.map(
-            preprocess_t5,
-            batched=True,
-            num_proc=args_cli.threads,
-            remove_columns=[args_cli.input_col, args_cli.target_col],
-            desc="🧠 Tokenizing test set",
-        )
+        train_dataset = tokenize_dataset(train_dataset, preprocess_t5, args_cli, "🧠 Tokenizing train set")
+        test_dataset = tokenize_dataset(test_dataset, preprocess_t5, args_cli, "🧠 Tokenizing test set")
         # Optionally preprocess validation (used post-training)
         if args_cli.eval_dataset_dir:
-            validation_dataset = validation_dataset.map(
-                preprocess_t5,
-                batched=True,
-                num_proc=args_cli.threads,
-                remove_columns=[args_cli.input_col, args_cli.target_col],
-                desc="🧠 Tokenizing validation set",
-            )
+            validation_dataset = tokenize_dataset(validation_dataset, preprocess_t5, args_cli, "🧠 Tokenizing validation set")
     else:
         rank_logger("info", "⚡ Detected pre-tokenized dataset — skipping tokenization.")
     report_memory()
@@ -444,6 +436,7 @@ def main():
     rank_logger("info", f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
 
     # --- Eval/save strategy logic ---
+    effective_batch_size = args_cli.batch_size * args_cli.gradient_accumulation_steps * torch.distributed.get_world_size()
     if args_cli.eval_strategy == "epoch":
         eval_strategy = "epoch"
         save_strategy = "epoch"
@@ -452,9 +445,6 @@ def main():
         rank_logger("info", "🔁 Using epoch-based evaluation and checkpointing (--eval_strategy=epoch).")
     else:
         # Improved eval/save interval calculation for "auto" strategy
-        import math
-        import torch
-        effective_batch_size = args_cli.per_device_train_batch_size * args_cli.gradient_accumulation_steps * torch.distributed.get_world_size()
         steps_per_epoch = math.ceil(len(train_dataset) / effective_batch_size)
         eval_steps = max(min(steps_per_epoch, 10_000) // 3, 1)
         save_steps = eval_steps
@@ -534,7 +524,7 @@ def main():
                 step = getattr(state, 'prediction_step', None)
                 rank_logger("debug", f"Current step: {step if step is not None else 'N/A'}")
             if args:
-                rank_logger("debug", f"Per device batch size: {args.per_device_eval_batch_size}")
+                rank_logger("debug", f"Batch size: {args.per_device_eval_batch_size}")
                 if hasattr(args, 'generation_max_length'):
                     rank_logger("info", f"Max generation length: {args.generation_max_length}")        
 
