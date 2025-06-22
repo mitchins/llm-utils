@@ -318,66 +318,63 @@ def main():
     import sys
 
     def compute_metrics(eval_pred):
-        import torch.distributed as dist
-        from transformers.trainer_utils import EvalPrediction
-        import logging
-        logger = logging.getLogger(__name__)
-        # Debug log for number of predictions
+        """
+        Compute evaluation metrics (ROUGE, METEOR if enabled, and combined) for predictions and labels.
+        """
+        from evaluate import load as load_metric
+        import numpy as np
+        # Use outer-scope tokenizer and args_cli
+        global tokenizer
         try:
-            logger.debug(f"Computing metrics on {len(eval_pred[0])} predictions.")
-        except Exception as e:
-            logger.debug(f"Could not determine length of predictions for metrics: {e}")
-
-        def actual_metric_fn(eval_pred):
-            preds, labels = eval_pred
-
-            # Ensure tensors are moved to CPU and converted to numpy
-            if hasattr(preds, "cpu"):
-                preds = preds.cpu().numpy()
-            if hasattr(labels, "cpu"):
-                labels = labels.cpu().numpy()
-
-            # If predictions are logits (3D), take argmax
-            if isinstance(preds, np.ndarray) and preds.ndim == 3:
-                preds = np.argmax(preds, axis=-1)
-
-            # Replace label -100s with pad token for decoding
-            labels_ = np.where(labels != -100, labels, tokenizer.pad_token_id)
-
-            # --- Filter invalid token ids before decoding to prevent OverflowError ---
-            # For predictions
-            preds_ = np.where(preds > tokenizer.vocab_size, tokenizer.pad_token_id, preds)
-            preds_ = np.clip(preds_, 0, tokenizer.vocab_size)
-            # For labels (should already be in vocab, but just in case)
-            labels_ = np.where(labels_ > tokenizer.vocab_size, tokenizer.pad_token_id, labels_)
-            labels_ = np.clip(labels_, 0, tokenizer.vocab_size)
-
-            decoded_preds = tokenizer.batch_decode(preds_, skip_special_tokens=True)
-            decoded_labels = tokenizer.batch_decode(labels_, skip_special_tokens=True)
-
-            # Format decoded output for metrics
-            import nltk
-            decoded_preds = ["\n".join(nltk.sent_tokenize(pred.strip())) for pred in decoded_preds]
-            decoded_labels = ["\n".join(nltk.sent_tokenize(label.strip())) for label in decoded_labels]
-
-            result = rouge_metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
-            return result
-
-        # Only compute metrics on rank 0
-        if dist.is_available() and dist.is_initialized():
-            rank = dist.get_rank()
-            world_size = dist.get_world_size()
-            if rank == 0:
-                metrics = actual_metric_fn(eval_pred)
-                obj_list = [metrics]
-                dist.broadcast_object_list(obj_list, src=0)
-                return metrics
+            args = args_cli
+        except NameError:
+            # fallback for args_cli not being global
+            import inspect
+            frame = inspect.currentframe()
+            while frame:
+                if "args_cli" in frame.f_globals:
+                    args = frame.f_globals["args_cli"]
+                    break
+                frame = frame.f_back
             else:
-                obj_list = [None]
-                dist.broadcast_object_list(obj_list, src=0)
-                return obj_list[0]
-        else:
-            return actual_metric_fn(eval_pred)
+                raise RuntimeError("args_cli not found in global scope")
+
+        # Load metrics only once if possible (reuse loaded ones)
+        # But for safety, reload here
+        rouge = load_metric("rouge")
+        meteor = load_metric("meteor")
+
+        predictions, labels = eval_pred
+        # If predictions are logits (3D), take argmax
+        if isinstance(predictions, np.ndarray) and predictions.ndim == 3:
+            predictions = np.argmax(predictions, axis=-1)
+        # Replace -100 in labels with pad_token_id
+        labels_ = np.where(labels != -100, labels, tokenizer.pad_token_id)
+        # Filter invalid token ids
+        predictions_ = np.where(predictions > tokenizer.vocab_size, tokenizer.pad_token_id, predictions)
+        predictions_ = np.clip(predictions_, 0, tokenizer.vocab_size)
+        labels_ = np.where(labels_ > tokenizer.vocab_size, tokenizer.pad_token_id, labels_)
+        labels_ = np.clip(labels_, 0, tokenizer.vocab_size)
+        # Decode
+        decoded_preds = tokenizer.batch_decode(predictions_, skip_special_tokens=True)
+        decoded_labels = tokenizer.batch_decode(labels_, skip_special_tokens=True)
+        # Format decoded output for metrics
+        import nltk
+        decoded_preds = ["\n".join(nltk.sent_tokenize(pred.strip())) for pred in decoded_preds]
+        decoded_labels = ["\n".join(nltk.sent_tokenize(label.strip())) for label in decoded_labels]
+        # Compute ROUGE
+        result = rouge.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
+        metrics = {
+            "eval_rouge1": result["rouge1"].mid.fmeasure if hasattr(result["rouge1"], "mid") else result["rouge1"],
+            "eval_rouge2": result["rouge2"].mid.fmeasure if hasattr(result["rouge2"], "mid") else result["rouge2"],
+            "eval_rougeL": result["rougeL"].mid.fmeasure if hasattr(result["rougeL"], "mid") else result["rougeL"],
+            "eval_rougeLsum": result["rougeLsum"].mid.fmeasure if hasattr(result["rougeLsum"], "mid") else result["rougeLsum"],
+        }
+        if args.calculate_meteor:
+            meteor_result = meteor.compute(predictions=decoded_preds, references=decoded_labels)
+            metrics["eval_meteor"] = meteor_result["meteor"]
+            metrics["eval_combined"] = 0.5 * metrics["eval_rougeL"] + 0.5 * metrics["eval_meteor"]
+        return metrics
 
     def report_memory():
         mem = psutil.Process().memory_info().rss / (1024 * 1024)
