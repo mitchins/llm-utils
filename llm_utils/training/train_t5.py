@@ -1,3 +1,8 @@
+def get_world_size_safe():
+    import torch.distributed
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        return torch.distributed.get_world_size()
+    return 1
 # Helper function to tokenize datasets
 def tokenize_dataset(dataset, preprocess_fn, args, desc):
     return dataset.map(
@@ -436,7 +441,7 @@ def main():
     rank_logger("info", f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
 
     # --- Eval/save strategy logic ---
-    effective_batch_size = args_cli.batch_size * args_cli.gradient_accumulation_steps * torch.distributed.get_world_size()
+    effective_batch_size = args_cli.batch_size * args_cli.gradient_accumulation_steps * get_world_size_safe()
     if args_cli.eval_strategy == "epoch":
         eval_strategy = "epoch"
         save_strategy = "epoch"
