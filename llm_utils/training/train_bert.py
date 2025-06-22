@@ -347,7 +347,9 @@ def main():
 
     def tokenize_fn(example):
         max_length = 1024 if "deberta" in model_checkpoint.lower() else 512
-        return tokenizer(example[args.text_field], truncation=True, max_length=max_length)
+        text_a = example[args.text_field]
+        text_b = example.get("alternate")  # None if not present
+        return tokenizer(text_a, text_b, truncation=True, max_length=max_length)
 
     # --- Optional holdout evaluation set ---
     monitor_eval_loader = None
