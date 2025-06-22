@@ -192,31 +192,22 @@ def main():
     random.seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
-    # --- Data loading logic supporting HuggingFace datasets ---
+    # --- Data loading logic supporting HuggingFace datasets and local files using hf:/ prefix ---
     from datasets import load_dataset
-    # Support both "hf.co/" and legacy "hf:" prefixes for HuggingFace datasets
-    if args.data_path.startswith("hf.co/"):
-        hf_dataset_name = args.data_path[len("hf.co/") :]
-        dataset = load_dataset(hf_dataset_name, split='train')
-        eval_ratio = getattr(args, 'eval_ratio', 0.1)
-        train_test_split = dataset.train_test_split(test_size=eval_ratio, seed=args.seed)
-        train_dataset = train_test_split['train']
-        eval_dataset = train_test_split['test']
+    import os
+    # Check if data path indicates an HF dataset
+    if args.data_path.startswith("hf:/"):
+        hf_path = args.data_path[4:]  # Strip the hf:/ prefix
+        dataset = load_dataset(hf_path, split="train")
+        # Support evaluation set if specified as split name
+        if args.evaluation_path:
+            eval_dataset = load_dataset(hf_path, split=args.evaluation_path)
+        else:
+            train_dataset = dataset
+            eval_dataset = None  # Split from train later
+        # For downstream compatibility, convert to pandas DataFrame
         df = pd.DataFrame(train_dataset)
-        eval_df = pd.DataFrame(eval_dataset)
-    elif args.data_path.startswith("hf:"):
-        parts = args.data_path.split(":")
-        if len(parts) != 3:
-            raise ValueError("Expected format: hf:<dataset_name>:<split>")
-        _, dataset_name, dataset_split = parts
-        # Always load the "train" split and perform our own train_test_split for eval
-        dataset = load_dataset(dataset_name, split="train")
-        split = dataset.train_test_split(test_size=0.1, seed=args.seed)
-        train_dataset = split["train"]
-        eval_dataset = split["test"]
-        # Convert to pandas DataFrame for downstream compatibility
-        df = pd.DataFrame(train_dataset)
-        eval_df = pd.DataFrame(eval_dataset)
+        eval_df = pd.DataFrame(eval_dataset) if eval_dataset is not None else None
     else:
         data_path = Path(args.data_path)
         if not data_path.exists():
@@ -229,14 +220,12 @@ def main():
 
         logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
 
-        if data_path.suffix == ".jsonl":
-            df = load_and_filter_dataframe(data_path=data_path, label_field=args.label_field)
-        elif data_path.suffix == ".csv":
-            df = pd.read_csv(data_path)
-        elif data_path.suffix == ".tsv":
-            df = pd.read_csv(data_path, sep="\t")
-        else:
-            raise ValueError(f"Unsupported file type: {data_path.suffix}")
+        # Load as HuggingFace JSON dataset
+        dataset = load_dataset("json", data_files=args.data_path, split="train")
+        train_dataset = dataset
+        eval_dataset = None  # Will be split from train unless specified
+        df = pd.DataFrame(train_dataset)
+        eval_df = None
 
     # --- Label list logic ---
     label_list = None
@@ -326,7 +315,18 @@ def main():
         logger.debug(f"✅ Label index range: {min_label} to {max_label}")
 
     # Conditional split logic for train/eval, only if not HuggingFace dataset
-    if not (args.data_path.startswith("hf:") or args.data_path.startswith("hf.co/")):
+    if args.data_path.startswith("hf:/"):
+        # If eval_dataset is None, perform split from train
+        if eval_df is None:
+            dataset = Dataset.from_pandas(df)
+            split = dataset.train_test_split(test_size=0.1, seed=args.seed)
+            train_df = split["train"].to_pandas()
+            eval_df = split["test"].to_pandas()
+            logger.info("📊 Using HuggingFace random split for eval set (hf:/ mode, no eval split specified).")
+        else:
+            train_df = df
+            eval_df = pd.DataFrame(eval_dataset)
+    else:
         if args.balance_class_ratio:
             df = df.sample(frac=1, random_state=42).reset_index(drop=True)  # shuffle once
             eval_indices = list(range(0, len(df), 10))
@@ -359,7 +359,6 @@ def main():
             train_df = split["train"].to_pandas()
             eval_df = split["test"].to_pandas()
             logger.info("📊 Using HuggingFace random split for eval set (unbalanced set).")
-    # If HuggingFace dataset, train_df and eval_df were already set above
 
     # --- Save eval dataset to JSONL ---
     eval_jsonl_path = output_dir / "last_eval_set.jsonl"
