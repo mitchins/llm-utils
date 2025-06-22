@@ -2,9 +2,7 @@ import json
 import argparse
 import sys
 from pathlib import Path
-import pandas as pd
 from sklearn.preprocessing import LabelEncoder
-from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
 from transformers import DataCollatorWithPadding
 import torch
@@ -58,18 +56,8 @@ class ClassificationTrainer(Trainer):
         logits = outputs.logits
         labels = inputs["labels"].long()
 
-        # --- Dynamic class weighting for weak/strong classes
+        # --- Dynamic class weighting for weak/strong classes (removed)
         class_weights = None
-        if self.args_cli.focus_weak_classes and hasattr(self, "trainer") and hasattr(self.trainer, "state") and self.trainer.state.log_history:
-            # Pull most recent eval F1 scores per class
-            history = self.trainer.state.log_history[::-1]
-            for entry in history:
-                if all(f"eval_f1_{tone}" in entry for tone in self.label_encoder.classes_):
-                    f1_scores = np.array([entry[f"eval_f1_{tone}"] for tone in self.label_encoder.classes_])
-                    max_f1 = np.max(f1_scores)
-                    class_weights = 0.5 + 1.5 * ((max_f1 - f1_scores) / (max_f1 + 1e-6))
-                    logger.info(f"🎯 Dynamic class weighting (scaled by F1 gap): {class_weights.round(3).tolist()}")
-                    break
 
         # Compute individual sample loss
         loss_fct = torch.nn.CrossEntropyLoss(
@@ -77,23 +65,11 @@ class ClassificationTrainer(Trainer):
             reduction='none'
         )
 
-        # --- Focal loss integration ---
-        if self.args_cli.use_focal_loss:
-            gamma = 2.0
-            logits_softmax = torch.nn.functional.softmax(logits, dim=1)
-            true_prob = logits_softmax[torch.arange(logits.size(0)), labels]
-            modulating_factor = (1 - true_prob) ** gamma
-            ce_loss = torch.nn.functional.cross_entropy(
-                logits, labels, reduction='none',
-                weight=torch.tensor(class_weights, device=logits.device) if class_weights is not None else None
-            )
-            loss = modulating_factor * ce_loss
-        else:
-            loss = loss_fct(logits, labels)
+        # --- Focal loss integration (removed) ---
+        loss = loss_fct(logits, labels)
 
         # Apply penalties for a specific class if configured and no other loss mods active
-        if (not self.args_cli.use_focal_loss and not self.args_cli.focus_weak_classes
-            and getattr(self.args_cli, "penalize_class_index", None) is not None):
+        if getattr(self.args_cli, "penalize_class_index", None) is not None:
             preds = torch.argmax(logits, dim=1)
             class_idx = self.args_cli.penalize_class_index
             penalty_mask = (labels == class_idx) | (preds == class_idx)
@@ -166,8 +142,6 @@ def main():
     parser.add_argument("--data-path", type=str, default="training_data.jsonl", help="Path to training data JSONL file")
     parser.add_argument("--balance-class-ratio", type=float, default=None,
                         help="Balance tone classes such that no class exceeds the smallest by more than this ratio (e.g., 1.0 = equal)")
-    parser.add_argument("--focus-weak-classes", action="store_true", help="Dynamically increase reward for underperforming classes and reduce focus on overperformers")
-    parser.add_argument("--use-focal-loss", action="store_true", help="Apply focal loss instead of standard cross-entropy")
     # New arguments:
     # New evaluation-path argument
     parser.add_argument("--evaluation-path", type=str, default=None, help="Optional evaluation dataset path for post-training scoring")
@@ -192,22 +166,14 @@ def main():
     random.seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
-    # --- Data loading logic supporting HuggingFace datasets and local files using hf:/ prefix ---
-    from datasets import load_dataset
+    # --- Unified data loading logic using HuggingFace datasets ---
+    from datasets import load_dataset, Dataset
     import os
-    # Check if data path indicates an HF dataset
-    if args.data_path.startswith("hf:/"):
-        hf_path = args.data_path[4:]  # Strip the hf:/ prefix
-        dataset = load_dataset(hf_path, split="train")
-        # Support evaluation set if specified as split name
-        if args.evaluation_path:
-            eval_dataset = load_dataset(hf_path, split=args.evaluation_path)
-        else:
-            train_dataset = dataset
-            eval_dataset = None  # Split from train later
-        # For downstream compatibility, convert to pandas DataFrame
-        df = pd.DataFrame(train_dataset)
-        eval_df = pd.DataFrame(eval_dataset) if eval_dataset is not None else None
+    # Unified loading: supports both HuggingFace and local files
+    if args.data_path.startswith("hf:"):
+        hf_path = args.data_path[3:]  # Strip the hf: prefix
+        logger.info(f"📃 Loading HuggingFace dataset: {hf_path}")
+        dataset = load_dataset(hf_path)
     else:
         data_path = Path(args.data_path)
         if not data_path.exists():
@@ -215,60 +181,89 @@ def main():
         if len(sys.argv) == 1:
             parser.print_help()
             exit(0)
-        if args.use_focal_loss and args.focus_weak_classes:
-            raise ValueError("❌ --use-focal-loss and --focus-weak-classes cannot be enabled at the same time. Please choose only one.")
-
         logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
-
-        # Load as HuggingFace JSON dataset
-        dataset = load_dataset("json", data_files=args.data_path, split="train")
+        if args.data_path.endswith(".json") or args.data_path.endswith(".jsonl"):
+            dataset = load_dataset("json", data_files=args.data_path)
+        elif args.data_path.endswith(".csv"):
+            dataset = load_dataset("csv", data_files=args.data_path)
+        else:
+            raise ValueError(f"Unsupported file type for data_path: {args.data_path}")
+    # Always assign train_dataset from the 'train' split (or entire dataset if only one split)
+    if "train" in dataset:
+        train_dataset = dataset["train"]
+    else:
+        # If it's a single split, use as train
         train_dataset = dataset
-        eval_dataset = None  # Will be split from train unless specified
-        df = pd.DataFrame(train_dataset)
-        eval_df = None
+    eval_dataset = None
+    # If an evaluation path is provided, load it
+    if args.evaluation_path:
+        if args.evaluation_path.startswith("hf:"):
+            hf_eval_path = args.evaluation_path[3:]
+            logger.info(f"📃 Loading HuggingFace eval dataset: {hf_eval_path}")
+            eval_dataset = load_dataset(hf_eval_path)
+            if "train" in eval_dataset:
+                eval_dataset = eval_dataset["train"]
+        else:
+            eval_path = Path(args.evaluation_path)
+            if not eval_path.exists():
+                parser.error(f"❌ Provided evaluation path does not exist: {eval_path}")
+            if eval_path.suffix in [".json", ".jsonl"]:
+                eval_dataset = load_dataset("json", data_files=str(eval_path))["train"]
+            elif eval_path.suffix == ".csv":
+                eval_dataset = load_dataset("csv", data_files=str(eval_path))["train"]
+            else:
+                raise ValueError(f"Unsupported evaluation file type: {eval_path.suffix}")
 
     # --- Label list logic ---
+    # Get label list from argument or from dataset
     label_list = None
     if args.label_list:
         label_list = [lbl.strip() for lbl in args.label_list.split(",")]
         logger.info(f"🔖 Using label list from --label-list: {label_list}")
     else:
-        label_list = sorted(df[args.label_field].unique().tolist())
+        # Get unique labels from train_dataset
+        label_list = sorted(set(train_dataset.unique(args.label_field)))
         logger.info(f"🔖 No --label-list provided, using all observed labels: {label_list}")
-
     # --- Validate label list is not empty
     if not label_list:
         logger.error("❌ No valid labels found in dataset after filtering.")
         sys.exit(1)
-
-    # Balance classes using top-ranked entries if requested and task is classification
+    # Optionally balance classes (classification only)
     if args.balance_class_ratio and args.task == "classification":
-        if {"vividness", "emotion", "action"}.issubset(df.columns):
-            df["combined_score"] = df["vividness"] + df["emotion"] + df["action"]
-        top_by_class = []
-        filtered_df = df[df[args.label_field].isin(label_list)]
-        if filtered_df.empty:
-            logger.error("❌ No data remaining after label filtering for balancing.")
-            sys.exit(1)
-        min_count = filtered_df[args.label_field].value_counts().min()
+        logger.info(f"🎯 Balancing classes using ratio {args.balance_class_ratio:.2f}")
+        # Filter to label_list
+        train_dataset = train_dataset.filter(lambda x: x[args.label_field] in label_list)
+        # Count per class
+        from collections import Counter
+        counts = Counter(train_dataset[args.label_field])
+        min_count = min(counts.values())
         max_allowed = int(min_count * args.balance_class_ratio)
-        for tone in label_list:
-            class_rows = df[df[args.label_field] == tone]
-            if "combined_score" in class_rows:
-                class_rows = class_rows.sort_values(by="combined_score", ascending=False)
-            top_class = class_rows.head(max_allowed)
-            top_by_class.append(top_class)
-        df = pd.concat(top_by_class).reset_index(drop=True)
-        # Insert per-class count logging
-        final_counts = df[args.label_field].value_counts().to_dict()
-        logger.info(f"🎯 Balanced dataset using ratio {args.balance_class_ratio:.2f}:")
+        # For each label, keep only up to max_allowed
+        def keep_limited(example, counts_so_far={}):
+            l = example[args.label_field]
+            if l not in counts_so_far:
+                counts_so_far[l] = 0
+            if counts_so_far[l] < max_allowed:
+                counts_so_far[l] += 1
+                return True
+            return False
+        filtered_indices = []
+        counts_so_far = {}
+        for idx, l in enumerate(train_dataset[args.label_field]):
+            if l not in counts_so_far:
+                counts_so_far[l] = 0
+            if counts_so_far[l] < max_allowed:
+                filtered_indices.append(idx)
+                counts_so_far[l] += 1
+        train_dataset = train_dataset.select(filtered_indices)
+        # Log final per-class counts
+        final_counts = Counter(train_dataset[args.label_field])
         logger.info(f"   Minimum class size = {min_count}")
         logger.info(f"   Class caps enforced at {max_allowed} per label")
         logger.info(f"   Final label distribution:")
         for tone in label_list:
             logger.info(f"     {tone:<12}: {final_counts.get(tone, 0)}")
-        logger.info(f"   Total training samples: {len(df)}")
-
+        logger.info(f"   Total training samples: {len(train_dataset)}")
     # Encode labels as classification label
     output_dir = Path(args.output_dir)
     if args.clean and output_dir.exists():
@@ -276,20 +271,18 @@ def main():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     encoder_path = output_dir / f"{args.label_field}_label_encoder.json"
-
     # Internal column name for encoded labels
     label_column_internal = "label_index"
-
     label_encoder = LabelEncoder()
-    if label_list is not None:
-        df = df[df[args.label_field].isin(label_list)].reset_index(drop=True)
-    label_encoder.fit(label_list if label_list is not None else sorted(df[args.label_field].unique()))
-    # Extra assertion: ensure label list is not empty after filtering
-    if not label_list:
-        logger.error("❌ No valid labels found in dataset after filtering.")
-        sys.exit(1)
-    df[label_column_internal] = label_encoder.transform(df[args.label_field])
-
+    # Filter to label_list
+    train_dataset = train_dataset.filter(lambda x: x[args.label_field] in label_list)
+    label_encoder.fit(label_list)
+    # Add label_index column using map
+    class2idx = {c: i for i, c in enumerate(label_encoder.classes_)}
+    def add_label_index(example):
+        example[label_column_internal] = int(class2idx[example[args.label_field]])
+        return example
+    train_dataset = train_dataset.map(add_label_index)
     # --- Penalize class logic ---
     penalize_class_index = None
     if args.penalize_class:
@@ -298,80 +291,31 @@ def main():
         penalize_class_index = list(label_encoder.classes_).index(args.penalize_class)
         logger.info(f"⚖️ Will apply special loss handling to class: {args.penalize_class} (index {penalize_class_index})")
     args.penalize_class_index = penalize_class_index
-
     with open(encoder_path, "w", encoding="utf-8") as f:
         json.dump({"classes": [int(x) if isinstance(x, (np.integer,)) else x for x in label_encoder.classes_]}, f)
-
-    # --- Safer label sanity check ---
-    if df.empty or df[label_column_internal].isnull().any():
-        logger.error("❌ Label index column contains NaNs or the dataframe is empty. Cannot proceed with training.")
-        logger.error(f"🔍 DataFrame shape: {df.shape}")
-        logger.error(f"🔍 First few rows:\n{df.head(5)}")
-        logger.error(f"🔍 Unique values in '{args.label_field}': {df[args.label_field].unique().tolist()}")
-        logger.error(f"🔍 Nulls in '{label_column_internal}': {df[label_column_internal].isnull().sum()}")
+    # --- Sanity check ---
+    if len(train_dataset) == 0:
+        logger.error("❌ No data remaining after label filtering. Cannot proceed with training.")
         sys.exit(1)
+    # --- Split train/eval if needed ---
+    if eval_dataset is None:
+        split = train_dataset.train_test_split(test_size=0.1, seed=args.seed)
+        train_dataset = split["train"]
+        val_dataset = split["test"]
+        logger.info("📊 Using HuggingFace random split for eval set.")
     else:
-        min_label, max_label = df[label_column_internal].min(), df[label_column_internal].max()
-        logger.debug(f"✅ Label index range: {min_label} to {max_label}")
-
-    # Conditional split logic for train/eval, only if not HuggingFace dataset
-    if args.data_path.startswith("hf:/"):
-        # If eval_dataset is None, perform split from train
-        if eval_df is None:
-            dataset = Dataset.from_pandas(df)
-            split = dataset.train_test_split(test_size=0.1, seed=args.seed)
-            train_df = split["train"].to_pandas()
-            eval_df = split["test"].to_pandas()
-            logger.info("📊 Using HuggingFace random split for eval set (hf:/ mode, no eval split specified).")
-        else:
-            train_df = df
-            eval_df = pd.DataFrame(eval_dataset)
-    else:
-        if args.balance_class_ratio:
-            df = df.sample(frac=1, random_state=42).reset_index(drop=True)  # shuffle once
-            eval_indices = list(range(0, len(df), 10))
-            train_indices = [i for i in range(len(df)) if i not in eval_indices]
-            train_df = df.iloc[train_indices].reset_index(drop=True)
-            eval_df = df.iloc[eval_indices].reset_index(drop=True)
-            logger.info(f"📊 Using 1-in-10 slicing for eval split (balanced set).")
-        elif args.stratify:
-            from sklearn.model_selection import train_test_split
-            if df[args.label_field].nunique() > 1 and all(df[args.label_field].value_counts() >= 2):
-                train_df, eval_df = train_test_split(
-                    df,
-                    test_size=0.1,
-                    stratify=df[args.label_field],
-                    random_state=args.seed,
-                )
-                train_df = train_df.reset_index(drop=True)
-                eval_df = eval_df.reset_index(drop=True)
-                logger.info("📊 Using stratified split for eval set.")
-            else:
-                logger.warning("⚠️ Stratified split requested but not enough samples per class. Falling back to random split.")
-                dataset = Dataset.from_pandas(df)
-                split = dataset.train_test_split(test_size=0.1, seed=args.seed)
-                train_df = split["train"].to_pandas()
-                eval_df = split["test"].to_pandas()
-                logger.info("📊 Using HuggingFace random split for eval set (fallback).")
-        else:
-            dataset = Dataset.from_pandas(df)
-            split = dataset.train_test_split(test_size=0.1, seed=args.seed)
-            train_df = split["train"].to_pandas()
-            eval_df = split["test"].to_pandas()
-            logger.info("📊 Using HuggingFace random split for eval set (unbalanced set).")
-
-    # --- Save eval dataset to JSONL ---
+        # Filter eval_dataset to label_list, add label_index
+        eval_dataset = eval_dataset.filter(lambda x: x[args.label_field] in label_list)
+        eval_dataset = eval_dataset.map(add_label_index)
+        val_dataset = eval_dataset
+    # Optionally save eval set (for reference)
     eval_jsonl_path = output_dir / "last_eval_set.jsonl"
-    eval_df.to_json(eval_jsonl_path, orient="records", lines=True, force_ascii=False)
+    val_dataset.to_json(str(eval_jsonl_path))
     logger.info(f"📝 Saved eval dataset used during training to: {eval_jsonl_path}")
-
-    train_dataset = Dataset.from_pandas(train_df)
-    val_dataset = Dataset.from_pandas(eval_df)
 
     # Tokenizer
     model_checkpoint = args.model_checkpoint
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-
     def tokenize_fn(example):
         max_length = 1024 if "deberta" in model_checkpoint.lower() else 512
         return tokenizer(
@@ -380,56 +324,46 @@ def main():
             truncation=True,
             max_length=max_length
         )
-
     # --- Optional holdout evaluation set ---
     monitor_eval_loader = None
     if args.evaluation_path:
         logger.info(f"🧪 Loading holdout monitoring set: {args.evaluation_path}")
-        if args.data_path.startswith("hf.co/"):
-            hf_dataset_name = args.data_path[len("hf.co/") :]
-            holdout_dataset = load_dataset(hf_dataset_name, split=args.evaluation_path)
-            holdout_df = pd.DataFrame(holdout_dataset)
-            holdout_df = holdout_df[holdout_df[args.label_field].isin(label_list)].reset_index(drop=True)
-            holdout_df[label_column_internal] = label_encoder.transform(holdout_df[args.label_field])
-            holdout_dataset = Dataset.from_pandas(holdout_df)
+        eval_path = args.evaluation_path
+        if eval_path.startswith("hf:"):
+            hf_eval_path = eval_path[3:]
+            holdout_dataset = load_dataset(hf_eval_path)
+            if "train" in holdout_dataset:
+                holdout_dataset = holdout_dataset["train"]
         else:
-            eval_path = Path(args.evaluation_path)
-            if eval_path.suffix == ".jsonl":
-                holdout_df = load_and_filter_dataframe(data_path=eval_path, label_field=args.label_field)
+            eval_path = Path(eval_path)
+            if eval_path.suffix in [".jsonl", ".json"]:
+                holdout_dataset = load_dataset("json", data_files=str(eval_path))["train"]
             elif eval_path.suffix == ".csv":
-                holdout_df = pd.read_csv(eval_path)
-            elif eval_path.suffix == ".tsv":
-                holdout_df = pd.read_csv(eval_path, sep="\t")
+                holdout_dataset = load_dataset("csv", data_files=str(eval_path))["train"]
             else:
                 raise ValueError(f"Unsupported evaluation file type: {eval_path.suffix}")
-            holdout_df = holdout_df[holdout_df[args.label_field].isin(label_list)].reset_index(drop=True)
-            holdout_df[label_column_internal] = label_encoder.transform(holdout_df[args.label_field])
-            holdout_dataset = Dataset.from_pandas(holdout_df)
+        holdout_dataset = holdout_dataset.filter(lambda x: x[args.label_field] in label_list)
+        holdout_dataset = holdout_dataset.map(add_label_index)
         tokenized_holdout = holdout_dataset.map(tokenize_fn, batched=True)
         tokenized_holdout = tokenized_holdout.rename_column(label_column_internal, "labels")
         tokenized_holdout.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
         from torch.utils.data import DataLoader
         monitor_eval_loader = DataLoader(tokenized_holdout, batch_size=32, collate_fn=DataCollatorWithPadding(tokenizer))
-
     # Tokenize both splits
     tokenized_train = train_dataset.map(tokenize_fn, batched=True)
     tokenized_val = val_dataset.map(tokenize_fn, batched=True)
-
-    # Format dataset
-    def format_labels(example):
-        example["labels"] = [example["vividness"], example["emotion"], example["action"], example["tightness"]]
-        example[label_column_internal] = int(example[label_column_internal])
-        example[label_column_internal] = np.int64(example[label_column_internal])
-        return example
-
     if args.task == "classification":
         tokenized_train = tokenized_train.rename_column(label_column_internal, "labels")
         tokenized_train.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
         tokenized_train = tokenized_train.shuffle(seed=42)
-
         tokenized_val = tokenized_val.rename_column(label_column_internal, "labels")
         tokenized_val.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
     else:
+        def format_labels(example):
+            example["labels"] = example[args.label_field]
+            example[label_column_internal] = int(example[label_column_internal])
+            example[label_column_internal] = np.int64(example[label_column_internal])
+            return example
         tokenized_train = tokenized_train.map(format_labels)
         tokenized_train = tokenized_train.rename_column("labels", "regression_labels")
         tokenized_train.set_format(type="torch", columns=["input_ids", "attention_mask", "regression_labels", label_column_internal])
@@ -547,6 +481,7 @@ def main():
                     labels = batch["labels"].cpu().numpy()
                     all_preds.extend(preds)
                     all_labels.extend(labels)
+            from sklearn.metrics import accuracy_score, f1_score
             acc = accuracy_score(all_labels, all_preds)
             f1 = f1_score(all_labels, all_preds, average="macro")
             self.writer.add_scalar(f"{self.name}/accuracy", acc, state.global_step)
@@ -579,7 +514,7 @@ def main():
     else:
         model_name = getattr(model.config, "architectures", ["Unknown"])[0]
         logger.warning(f"⚠️ Could not determine model output classes for model type: {model_name}")
-    logger.info(f"✅ Max label index in dataset: {df[label_column_internal].max()}")
+    logger.info(f"✅ Max label index in dataset: {max(train_dataset[label_column_internal])}")
 
     trainer.train()
 
