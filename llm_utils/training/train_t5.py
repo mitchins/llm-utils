@@ -318,11 +318,11 @@ def main():
     import sys
 
 def compute_metrics(eval_pred, **kwargs):
-        """
-        Compute evaluation metrics (ROUGE, METEOR if enabled, and combined) for predictions and labels.
-        """
-        from evaluate import load as load_metric
-        import numpy as np
+    """
+    Compute evaluation metrics (ROUGE, METEOR if enabled, and combined) for predictions and labels.
+    """
+    from evaluate import load as load_metric
+    import numpy as np
     # Extract tokenizer from kwargs (for functools.partial support)
     tokenizer = kwargs["tokenizer"]
     # Use outer-scope args_cli
