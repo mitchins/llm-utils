@@ -326,19 +326,19 @@ def compute_metrics(eval_pred, **kwargs):
     # Extract tokenizer from kwargs (for functools.partial support)
     tokenizer = kwargs["tokenizer"]
     # Use outer-scope args_cli
-        try:
-            args = args_cli
-        except NameError:
-            # fallback for args_cli not being global
-            import inspect
-            frame = inspect.currentframe()
-            while frame:
-                if "args_cli" in frame.f_globals:
-                    args = frame.f_globals["args_cli"]
-                    break
-                frame = frame.f_back
-            else:
-                raise RuntimeError("args_cli not found in global scope")
+    try:
+        args = args_cli
+    except NameError:
+        # fallback for args_cli not being global
+        import inspect
+        frame = inspect.currentframe()
+        while frame:
+            if "args_cli" in frame.f_globals:
+                args = frame.f_globals["args_cli"]
+                break
+            frame = frame.f_back
+        else:
+            raise RuntimeError("args_cli not found in global scope")
 
         # Load metrics only once if possible (reuse loaded ones)
         # But for safety, reload here
