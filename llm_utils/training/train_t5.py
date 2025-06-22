@@ -550,6 +550,9 @@ def main():
             super().save_model(output_dir, _internal_call)
 
     from transformers import DataCollatorForSeq2Seq
+    # Patch: Ensure tokenizer is passed to compute_metrics using functools.partial
+    from functools import partial
+    compute_metrics_fn = partial(compute_metrics, tokenizer=tokenizer)
     # Use test_dataset for ongoing eval, validation_dataset only for explicit post-training validation
     trainer = RankZeroOnlySaveTrainer(
         model=model,
@@ -566,7 +569,7 @@ def main():
             EpochNormalizedLogger(writer),
             MemoryUsageLogger(model, args_cli.model_checkpoint, base_batch_size, input_size=512)
         ],
-        compute_metrics=compute_metrics,
+        compute_metrics=compute_metrics_fn,
     )
 
     trainer.train()
