@@ -187,28 +187,29 @@ def main():
         rank_logger("info", "📂 Loading HuggingFace dataset from disk...")
         train_dataset = Dataset.load_from_disk(args_cli.train_dataset_dir)
 
+    validation_dataset = None
     if args_cli.eval_dataset_dir:
         eval_path = Path(args_cli.eval_dataset_dir)
         if eval_path.suffix == ".csv":
             import pandas as pd
-            rank_logger("info", "📄 Detected CSV format for evaluation dataset.")
+            rank_logger("info", "📄 Detected CSV format for validation dataset.")
             df = pd.read_csv(eval_path)
-            val_dataset = Dataset.from_pandas(df)
+            validation_dataset = Dataset.from_pandas(df)
         elif eval_path.suffix == ".json":
             import pandas as pd
-            rank_logger("info", "📄 Detected JSON format for evaluation dataset.")
+            rank_logger("info", "📄 Detected JSON format for validation dataset.")
             df = pd.read_json(eval_path)
-            val_dataset = Dataset.from_pandas(df)
+            validation_dataset = Dataset.from_pandas(df)
         else:
-            val_dataset = Dataset.load_from_disk(args_cli.eval_dataset_dir)
-        rank_logger("info", f"✅ Loaded train ({len(train_dataset)}), eval ({len(val_dataset)}) from disk or file.")
+            validation_dataset = Dataset.load_from_disk(args_cli.eval_dataset_dir)
+        rank_logger("info", f"✅ Loaded train ({len(train_dataset)}), validation ({len(validation_dataset)}) from disk or file.")
     else:
         total_examples = len(train_dataset)
         eval_size = int(total_examples * args_cli.validation_size)
-        rank_logger("info", f"📊 Splitting train into train/val: total {total_examples}, val size {eval_size} ({(eval_size/total_examples)*100:.2f}%)")
+        rank_logger("info", f"📊 Splitting train into train/test: total {total_examples}, test size {eval_size} ({(eval_size/total_examples)*100:.2f}%)")
         split = train_dataset.train_test_split(test_size=eval_size/total_examples, seed=42)
         train_dataset = split["train"]
-        val_dataset = split["test"]
+        test_dataset = split["test"]
 
     # Check if dataset is already tokenized
     is_tokenized = all(
@@ -382,7 +383,7 @@ def main():
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
 
-    # Tokenize train and val splits after splitting
+    # Tokenize train and test/validation splits after splitting
     rank_logger("info", "🪄 Starting dataset tokenization...")
     report_memory()
     if not is_tokenized:
@@ -394,24 +395,43 @@ def main():
             remove_columns=[args_cli.input_col, args_cli.target_col],
             desc="🧠 Tokenizing train set",
         )
-        val_dataset = val_dataset.map(
+        # Always preprocess test (used during training metrics)
+        test_dataset = test_dataset.map(
             preprocess_t5,
             batched=True,
             num_proc=args_cli.threads,
             remove_columns=[args_cli.input_col, args_cli.target_col],
-            desc="🧠 Tokenizing val set",
+            desc="🧠 Tokenizing test set",
         )
+        # Optionally preprocess validation (used post-training)
+        if args_cli.eval_dataset_dir:
+            validation_dataset = validation_dataset.map(
+                preprocess_t5,
+                batched=True,
+                num_proc=args_cli.threads,
+                remove_columns=[args_cli.input_col, args_cli.target_col],
+                desc="🧠 Tokenizing validation set",
+            )
     else:
         rank_logger("info", "⚡ Detected pre-tokenized dataset — skipping tokenization.")
     report_memory()
 
     # Filter by input length
     train_dataset = train_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
-    val_dataset = val_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
-    rank_logger("info", f"✅ Tokenization complete: train {len(train_dataset):,} examples, val {len(val_dataset):,} examples")
+    if args_cli.eval_dataset_dir:
+        validation_dataset = validation_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
+    else:
+        test_dataset = test_dataset.filter(lambda x: len(x["input_ids"]) <= args_cli.max_input_length)
+    if args_cli.eval_dataset_dir:
+        rank_logger("info", f"✅ Tokenization complete: train {len(train_dataset):,} examples, validation {len(validation_dataset):,} examples")
+    else:
+        rank_logger("info", f"✅ Tokenization complete: train {len(train_dataset):,} examples, test {len(test_dataset):,} examples")
     # Do not use type="Torch", it'll cause inefficient warnings. Let DataCollatorForSeq2Seq handle it.
     train_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
-    val_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
+    if args_cli.eval_dataset_dir:
+        validation_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
+    else:
+        test_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
 
     model_name = args_cli.model_checkpoint.split("/")[-1]
     dataset_name = Path(args_cli.train_dataset_dir).stem
@@ -538,11 +558,12 @@ def main():
             super().save_model(output_dir, _internal_call)
 
     from transformers import DataCollatorForSeq2Seq
+    # Use test_dataset for ongoing eval, validation_dataset only for explicit post-training validation
     trainer = RankZeroOnlySaveTrainer(
         model=model,
         args=args,
         train_dataset=train_dataset,
-        eval_dataset=val_dataset,
+        eval_dataset=test_dataset if not args_cli.eval_dataset_dir else validation_dataset,
         processing_class=tokenizer,
         data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
         callbacks=[
