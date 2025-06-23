@@ -9,6 +9,7 @@ from transformers import AutoConfig
 from transformers import DataCollatorWithPadding
 import logging
 import os
+import psutil
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ def get_world_size_safe():
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         return torch.distributed.get_world_size()
     return 1
-    
+
 # Helper function to tokenize datasets
 def tokenize_dataset(dataset, preprocess_fn, args, desc):
     return dataset.map(
