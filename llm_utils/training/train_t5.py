@@ -22,12 +22,18 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, Seq2SeqTrainer, S
 from transformers import AutoConfig
 from transformers import DataCollatorWithPadding
 import logging
-import os
-from datetime import datetime
-from tqdm.auto import tqdm
-import psutil
-import math
-import torch
+
+logger = logging.getLogger(__name__)
+
+def rank_logger(level, message):
+    if dist.is_available() and dist.is_initialized():
+        rank = dist.get_rank()
+        prefix = f"[rank{rank}] "
+    elif "RANK" in os.environ:
+        prefix = f"[rank{os.environ['RANK']}] "
+    else:
+        prefix = ""
+    getattr(logger, level)(f"{prefix}{message}")
 
 # === Default hyperparameter constants ===
 DEFAULT_WARMUP_STEPS = 500
@@ -46,6 +52,20 @@ from .utils import load_and_filter_dataframe, determine_batch_size
 from torch.utils.tensorboard import SummaryWriter
 import torch
 import torch.distributed as dist
+import logging
+
+logger = logging.getLogger(__name__)
+
+def rank_logger(level, message):
+    if dist.is_available() and dist.is_initialized():
+        rank = dist.get_rank()
+        prefix = f"[rank{rank}] "
+    elif "RANK" in os.environ:
+        prefix = f"[rank{os.environ['RANK']}] "
+    else:
+        prefix = ""
+    getattr(logger, level)(f"{prefix}{message}")
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Default min_delta values for early stopping
@@ -166,14 +186,20 @@ def is_main_process() -> bool:
 
 def main():
     args_cli = parser.parse_args()
-
-    # Logging at the start of the script
+    # Set up logging level
     logging.basicConfig(level=logging.DEBUG if args_cli.debug else logging.INFO)
+    # Logging at the start of the script
     logger = logging.getLogger(__name__)
     # === Rank-aware logger ===
     def rank_logger(level, message):
-        rank = os.environ.get("RANK", "0")
-        getattr(logger, level)(f"[rank{rank}] {message}")
+        if dist.is_available() and dist.is_initialized():
+            rank = dist.get_rank()
+            prefix = f"[rank{rank}] "
+        elif "RANK" in os.environ:
+            prefix = f"[rank{os.environ['RANK']}] "
+        else:
+            prefix = ""
+        getattr(logger, level)(f"{prefix}{message}")
 
     rank_logger("info", "🚦 Process start: initializing training script.")
     rank_logger("info", "🚀 Starting T5 training script...")
