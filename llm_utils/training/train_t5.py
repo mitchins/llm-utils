@@ -62,6 +62,7 @@ logger = logging.getLogger(__name__)
 is_tokenized = False
 train_dataset = None
 validation_dataset = None
+args_cli = None  # This one's awful
 
 def rank_logger(level, message):
     if dist.is_available() and dist.is_initialized():
