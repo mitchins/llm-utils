@@ -23,6 +23,7 @@ from transformers import Seq2SeqTrainer as HFSeq2SeqTrainer, TrainerCallback
 from torch.distributed import is_initialized, get_rank
 from typing import Optional
 from transformers import DataCollatorForSeq2Seq
+import math
 
 logger = logging.getLogger(__name__)
 
