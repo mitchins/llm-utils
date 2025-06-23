@@ -70,6 +70,7 @@ class TrainingState:
         self.test_dataset = None  # For ongoing evaluation during training
         self.validation_dataset = None  # For post-training validation
         self.args_cli = None
+        self.tokenizer = None
 
 # Create a global instance of the state
 state = TrainingState()
@@ -248,13 +249,13 @@ def report_memory():
     rank_logger("info", f"🧠 Current memory usage: {mem:.2f} MB")
 
 def preprocess_t5(example):
-    model_inputs = tokenizer(
+    model_inputs = state.tokenizer(
         example[state.args_cli.input_col],
         truncation=True,
         padding="max_length",
         max_length=state.args_cli.max_input_length
     )
-    labels = tokenizer(
+    labels = state.tokenizer(
         example[state.args_cli.target_col],
         truncation=True,
         padding="max_length",
@@ -293,7 +294,7 @@ def main():
     # ----------------- TOKENIZER LOAD (must occur before tokenization) -----------------
     model_checkpoint = state.args_cli.model_checkpoint
     rank_logger("info", "🔤 Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, use_fast=True)
+    state.tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, use_fast=True)
     rank_logger("info", "✅ Tokenizer loaded.")
 
     # Only load from disk (HuggingFace datasets), or from CSV/JSON if specified
@@ -366,8 +367,8 @@ def main():
         predictions = pred.predictions
         labels = pred.label_ids
 
-        decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
-        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+        decoded_preds = state.tokenizer.batch_decode(predictions, skip_special_tokens=True)
+        decoded_labels = state.tokenizer.batch_decode(labels, skip_special_tokens=True)
 
         decoded_preds = [pred.strip() for pred in decoded_preds]
         decoded_labels = [label.strip() for label in decoded_labels]
@@ -438,16 +439,16 @@ def main():
             predictions = np.argmax(predictions, axis=-1)
         
         # Replace -100 in labels with pad_token_id
-        labels_ = np.where(labels != -100, labels, tokenizer.pad_token_id)
+        labels_ = np.where(labels != -100, labels, state.tokenizer.pad_token_id)
         # Filter invalid token ids
-        predictions_ = np.where(predictions > tokenizer.vocab_size, tokenizer.pad_token_id, predictions)
-        predictions_ = np.clip(predictions_, 0, tokenizer.vocab_size)
-        labels_ = np.where(labels_ > tokenizer.vocab_size, tokenizer.pad_token_id, labels_)
-        labels_ = np.clip(labels_, 0, tokenizer.vocab_size)
+        predictions_ = np.where(predictions > state.tokenizer.vocab_size, state.tokenizer.pad_token_id, predictions)
+        predictions_ = np.clip(predictions_, 0, state.tokenizer.vocab_size)
+        labels_ = np.where(labels_ > state.tokenizer.vocab_size, state.tokenizer.pad_token_id, labels_)
+        labels_ = np.clip(labels_, 0, state.tokenizer.vocab_size)
         
         # Decode
-        decoded_preds = tokenizer.batch_decode(predictions_, skip_special_tokens=True)
-        decoded_labels = tokenizer.batch_decode(labels_, skip_special_tokens=True)
+        decoded_preds = state.tokenizer.batch_decode(predictions_, skip_special_tokens=True)
+        decoded_labels = state.tokenizer.batch_decode(labels_, skip_special_tokens=True)
         
         # Process predictions
         import nltk
@@ -469,8 +470,6 @@ def main():
             metrics["eval_meteor"] = meteor_result["meteor"]
             metrics["eval_combined"] = 0.5 * metrics["eval_rougeL"] + 0.5 * metrics["eval_meteor"]
         return metrics
-    
-    return compute_metrics
 
     # Tokenize train and test/validation splits after splitting
     rank_logger("info", "🪄 Starting dataset tokenization...")
@@ -585,8 +584,8 @@ def main():
         args=args,
         train_dataset=state.train_dataset,
         eval_dataset=state.test_dataset,
-        processing_class=tokenizer,
-        data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
+        processing_class=state.tokenizer,
+        data_collator=DataCollatorForSeq2Seq(state.tokenizer, model=model),
         callbacks=[
             EarlyStoppingCallback(
                 early_stopping_patience=state.args_cli.early_stopping_patience,
@@ -595,10 +594,7 @@ def main():
             EpochNormalizedLogger(writer),
             MemoryUsageLogger(model, state.args_cli.model_checkpoint, base_batch_size, input_size=512)
         ],
-        compute_metrics=create_compute_metrics(
-            tokenizer=tokenizer,
-            calculate_meteor=state.args_cli.calculate_meteor
-        ),
+        compute_metrics=create_compute_metrics
     )
 
     trainer.train()
@@ -618,7 +614,7 @@ def main():
         final_path = Path(f"{root}-v{i}")
         final_path.mkdir(parents=True, exist_ok=True)
         model.save_pretrained(final_path)
-        tokenizer.save_pretrained(final_path)
+        state.tokenizer.save_pretrained(final_path)
         rank_logger("info", f"✅ Saved final model to {final_path}")
 
 if __name__ == "__main__":
