@@ -60,7 +60,6 @@ DEFAULT_LEARNING_RATE = 5e-5
 DEFAULT_TOTAL_EPOCHS = 30
 DEFAULT_VALIDATION_SIZE = 0.10
 DEFAULT_EARLY_STOPPING_PATIENCE = 15
-DEFAULT_MIN_DELTA = 0.1
 DEFAULT_MAX_INPUT_LENGTH = 512
 DEFAULT_MAX_TARGET_LENGTH = 128
 
@@ -198,7 +197,7 @@ parser.add_argument(
     help=f"Number of evaluations with no improvement before early stopping (default: {DEFAULT_EARLY_STOPPING_PATIENCE})"
 )
 parser.add_argument(
-    "--min-delta", type=float, default=DEFAULT_MIN_DELTA,
+    "--min-delta", type=float, default=None,
     help=f"Minimum absolute improvement to reset early-stopping patience (default: {DEFAULT_MIN_DELTAS['combined']} if METEOR enabled, else {DEFAULT_MIN_DELTAS['rougeL']})"
 )
 parser.add_argument("--validation-size", type=float, default=DEFAULT_VALIDATION_SIZE, help=f"Percentage of the dataset to use as validation set (default: {DEFAULT_VALIDATION_SIZE})")
