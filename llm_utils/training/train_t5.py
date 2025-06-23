@@ -1,17 +1,3 @@
-def get_world_size_safe():
-    import torch.distributed
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        return torch.distributed.get_world_size()
-    return 1
-# Helper function to tokenize datasets
-def tokenize_dataset(dataset, preprocess_fn, args, desc):
-    return dataset.map(
-        preprocess_fn,
-        batched=True,
-        num_proc=args.threads,
-        remove_columns=[args.input_col, args.target_col],
-        desc=desc,
-    )
 import json
 import numpy as np  # Ensure this import is at the top
 import argparse
@@ -22,8 +8,25 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, Seq2SeqTrainer, S
 from transformers import AutoConfig
 from transformers import DataCollatorWithPadding
 import logging
+import os
 
 logger = logging.getLogger(__name__)
+
+def get_world_size_safe():
+    import torch.distributed
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        return torch.distributed.get_world_size()
+    return 1
+    
+# Helper function to tokenize datasets
+def tokenize_dataset(dataset, preprocess_fn, args, desc):
+    return dataset.map(
+        preprocess_fn,
+        batched=True,
+        num_proc=args.threads,
+        remove_columns=[args.input_col, args.target_col],
+        desc=desc,
+    )
 
 def rank_logger(level, message):
     if dist.is_available() and dist.is_initialized():
