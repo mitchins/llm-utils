@@ -10,6 +10,14 @@ from transformers import DataCollatorWithPadding
 import logging
 import os
 import psutil
+from transformers import EarlyStoppingCallback
+from .callbacks import EpochNormalizedLogger, MemoryUsageLogger, ManualEarlyStopCallback
+from .evaluation_utils import calculate_dynamic_eval_steps
+from .utils import load_and_filter_dataframe, determine_batch_size
+from torch.utils.tensorboard import SummaryWriter
+import torch
+import torch.distributed as dist
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -49,16 +57,9 @@ DEFAULT_MIN_DELTA = 0.1
 DEFAULT_MAX_INPUT_LENGTH = 512
 DEFAULT_MAX_TARGET_LENGTH = 128
 
-from transformers import EarlyStoppingCallback
-from .callbacks import EpochNormalizedLogger, MemoryUsageLogger, ManualEarlyStopCallback
-from .evaluation_utils import calculate_dynamic_eval_steps
-from .utils import load_and_filter_dataframe, determine_batch_size
-from torch.utils.tensorboard import SummaryWriter
-import torch
-import torch.distributed as dist
-import logging
-
 logger = logging.getLogger(__name__)
+# TODO: probably switch to class based soon as the below globals are becoming messy
+is_tokenized = False
 
 def rank_logger(level, message):
     if dist.is_available() and dist.is_initialized():
