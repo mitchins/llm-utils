@@ -18,6 +18,11 @@ from torch.utils.tensorboard import SummaryWriter
 import torch
 import torch.distributed as dist
 import logging
+import time
+from transformers import Seq2SeqTrainer as HFSeq2SeqTrainer, TrainerCallback
+from torch.distributed import is_initialized, get_rank
+from typing import Optional
+from transformers import DataCollatorForSeq2Seq
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +73,46 @@ class TrainingState:
 
 # Create a global instance of the state
 state = TrainingState()
+
+class PredictionShapeLoggerCallback(TrainerCallback):
+    def on_prediction_step(self, args, state, control, **kwargs):
+        rank_logger("debug", f"Available kwargs: {list(kwargs.keys())}")
+        if 'model' in kwargs:
+            model = kwargs['model']
+            rank_logger("debug", f"Model: {type(model)}")
+        if 'inputs' in kwargs:
+            inputs = kwargs['inputs']
+            if isinstance(inputs, dict):
+                for key, value in inputs.items():
+                    if hasattr(value, 'shape'):
+                        pass
+            elif hasattr(inputs, 'shape'):
+                pass
+        if state:
+            step = getattr(state, 'prediction_step', None)
+            rank_logger("debug", f"Current step: {step if step is not None else 'N/A'}")
+        if args:
+            rank_logger("debug", f"Batch size: {args.per_device_eval_batch_size}")
+            if hasattr(args, 'generation_max_length'):
+                rank_logger("info", f"Max generation length: {args.generation_max_length}")        
+
+# === Trainer subclass: only save on rank 0 ===
+class RankZeroOnlySaveTrainer(HFSeq2SeqTrainer):
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        if self.args.predict_with_generate and not prediction_loss_only:
+            self._start_time = time.time()
+            rank_logger("debug", "🔁 Generation started...")
+        outputs = super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
+        if self.args.predict_with_generate and not prediction_loss_only:
+            duration = time.time() - self._start_time
+            rank_logger("debug", f"✅ Generation complete in {duration:.2f}s")
+        return outputs
+    
+    def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = True):
+        if getattr(self.args, "local_rank", -1) not in [-1, 0]:
+            rank_logger("info", f"[rank{getattr(self.args, 'local_rank', -1)}] Skipping save_model.")
+            return
+        super().save_model(output_dir, _internal_call)
 
 def rank_logger(level, message):
     if dist.is_available() and dist.is_initialized():
@@ -197,6 +242,26 @@ parser.add_argument("--eval-dataset-dir", type=str, help="Optional path to evalu
 
 def is_main_process() -> bool:
     return not dist.is_initialized() or dist.get_rank() == 0
+
+def report_memory():
+    mem = psutil.Process().memory_info().rss / (1024 * 1024)
+    rank_logger("info", f"🧠 Current memory usage: {mem:.2f} MB")
+
+def preprocess_t5(example):
+    model_inputs = tokenizer(
+        example[state.args_cli.input_col],
+        truncation=True,
+        padding="max_length",
+        max_length=state.args_cli.max_input_length
+    )
+    labels = tokenizer(
+        example[state.args_cli.target_col],
+        truncation=True,
+        padding="max_length",
+        max_length=state.args_cli.max_target_length
+    )
+    model_inputs["labels"] = labels["input_ids"]
+    return model_inputs
 
 def main():
     state.args_cli = parser.parse_args()
@@ -407,221 +472,154 @@ def main():
     
     return compute_metrics
 
-def report_memory():
-    mem = psutil.Process().memory_info().rss / (1024 * 1024)
-    rank_logger("info", f"🧠 Current memory usage: {mem:.2f} MB")
+    # Tokenize train and test/validation splits after splitting
+    rank_logger("info", "🪄 Starting dataset tokenization...")
+    report_memory()
+    if not state.is_tokenized:
+        rank_logger("info", "🔄 Dataset not yet tokenized — applying preprocessing...")
+        state.train_dataset = tokenize_dataset(state.train_dataset, preprocess_t5, state.args_cli, "🧠 Tokenizing train set")
+        state.test_dataset = tokenize_dataset(state.test_dataset, preprocess_t5, state.args_cli, "🧠 Tokenizing test set")
+        # Optionally preprocess validation (used post-training)
+        if state.args_cli.eval_dataset_dir:
+            state.validation_dataset = tokenize_dataset(state.validation_dataset, preprocess_t5, state.args_cli, "🧠 Tokenizing validation set")
+    else:
+        rank_logger("info", "⚡ Detected pre-tokenized dataset — skipping tokenization.")
+    report_memory()
 
-def preprocess_t5(example):
-    model_inputs = tokenizer(
-        example[state.args_cli.input_col],
-        truncation=True,
-        padding="max_length",
-        max_length=state.args_cli.max_input_length
-    )
-    labels = tokenizer(
-        example[state.args_cli.target_col],
-        truncation=True,
-        padding="max_length",
-        max_length=state.args_cli.max_target_length
-    )
-    model_inputs["labels"] = labels["input_ids"]
-    return model_inputs
-
-# Tokenize train and test/validation splits after splitting
-rank_logger("info", "🪄 Starting dataset tokenization...")
-report_memory()
-if not state.is_tokenized:
-    rank_logger("info", "🔄 Dataset not yet tokenized — applying preprocessing...")
-    state.train_dataset = tokenize_dataset(state.train_dataset, preprocess_t5, state.args_cli, "🧠 Tokenizing train set")
-    state.test_dataset = tokenize_dataset(state.test_dataset, preprocess_t5, state.args_cli, "🧠 Tokenizing test set")
-    # Optionally preprocess validation (used post-training)
+    # Filter by input length
+    state.train_dataset = state.train_dataset.filter(lambda x: len(x["input_ids"]) <= state.args_cli.max_input_length)
     if state.args_cli.eval_dataset_dir:
-        state.validation_dataset = tokenize_dataset(state.validation_dataset, preprocess_t5, state.args_cli, "🧠 Tokenizing validation set")
-else:
-    rank_logger("info", "⚡ Detected pre-tokenized dataset — skipping tokenization.")
-report_memory()
+        state.validation_dataset = state.validation_dataset.filter(lambda x: len(x["input_ids"]) <= state.args_cli.max_input_length)
+    else:
+        state.test_dataset = state.test_dataset.filter(lambda x: len(x["input_ids"]) <= state.args_cli.max_input_length)
+    if state.args_cli.eval_dataset_dir:
+        rank_logger("info", f"✅ Tokenization complete: train {len(state.train_dataset):,} examples, validation {len(state.validation_dataset):,} examples")
+    else:
+        rank_logger("info", f"✅ Tokenization complete: train {len(state.train_dataset):,} examples, test {len(state.test_dataset):,} examples")
+    # Do not use type="Torch", it'll cause inefficient warnings. Let DataCollatorForSeq2Seq handle it.
+    state.train_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
+    if state.args_cli.eval_dataset_dir:
+        state.validation_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
+    else:
+        state.test_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
 
-# Filter by input length
-state.train_dataset = state.train_dataset.filter(lambda x: len(x["input_ids"]) <= state.args_cli.max_input_length)
-if state.args_cli.eval_dataset_dir:
-    state.validation_dataset = state.validation_dataset.filter(lambda x: len(x["input_ids"]) <= state.args_cli.max_input_length)
-else:
-    state.test_dataset = state.test_dataset.filter(lambda x: len(x["input_ids"]) <= state.args_cli.max_input_length)
-if state.args_cli.eval_dataset_dir:
-    rank_logger("info", f"✅ Tokenization complete: train {len(state.train_dataset):,} examples, validation {len(state.validation_dataset):,} examples")
-else:
-    rank_logger("info", f"✅ Tokenization complete: train {len(state.train_dataset):,} examples, test {len(state.test_dataset):,} examples")
-# Do not use type="Torch", it'll cause inefficient warnings. Let DataCollatorForSeq2Seq handle it.
-state.train_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
-if state.args_cli.eval_dataset_dir:
-    state.validation_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
-else:
-    state.test_dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
+    model_name = state.args_cli.model_checkpoint.split("/")[-1]
+    dataset_name = Path(state.args_cli.train_dataset_dir).stem
 
-model_name = state.args_cli.model_checkpoint.split("/")[-1]
-dataset_name = Path(state.args_cli.train_dataset_dir).stem
+    # Determine batch size: user override or auto-scaled
+    if state.args_cli.batch_size is not None:
+        base_batch_size = state.args_cli.batch_size
+    else:
+        base_batch_size = determine_batch_size(state.args_cli.model_checkpoint, False)
+    rank_logger("info", f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
 
-# Determine batch size: user override or auto-scaled
-if state.args_cli.batch_size is not None:
-    base_batch_size = state.args_cli.batch_size
-else:
-    base_batch_size = determine_batch_size(state.args_cli.model_checkpoint, False)
-rank_logger("info", f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
+    # --- Eval/save strategy logic ---
+    effective_batch_size = state.args_cli.batch_size * state.args_cli.gradient_accumulation_steps * get_world_size_safe()
+    if state.args_cli.eval_strategy == "epoch":
+        eval_strategy = "epoch"
+        save_strategy = "epoch"
+        eval_steps = None
+        save_steps = None
+        rank_logger("info", "🔁 Using epoch-based evaluation and checkpointing (--eval_strategy=epoch).")
+    else:
+        # Improved eval/save interval calculation for "auto" strategy
+        steps_per_epoch = math.ceil(len(state.train_dataset) / effective_batch_size)
+        eval_steps = max(min(steps_per_epoch, 10_000) // 3, 1)
+        save_steps = eval_steps
+        eval_strategy = "steps"
+        save_strategy = "steps"
+        rank_logger("info", f"🔢 Using dynamic step-based evaluation/checkpointing every {eval_steps} steps (--eval_strategy=auto).")
+    # Allow manual override of eval_steps if set
+    if state.args_cli.eval_steps is not None and state.args_cli.eval_strategy != "epoch":
+        eval_steps = state.args_cli.eval_steps
+        save_steps = state.args_cli.eval_steps
+        rank_logger("info", f"📏 Overriding eval/save steps: {eval_steps}")
 
-# --- Eval/save strategy logic ---
-effective_batch_size = state.args_cli.batch_size * state.args_cli.gradient_accumulation_steps * get_world_size_safe()
-if state.args_cli.eval_strategy == "epoch":
-    eval_strategy = "epoch"
-    save_strategy = "epoch"
-    eval_steps = None
-    save_steps = None
-    rank_logger("info", "🔁 Using epoch-based evaluation and checkpointing (--eval_strategy=epoch).")
-else:
-    # Improved eval/save interval calculation for "auto" strategy
-    steps_per_epoch = math.ceil(len(state.train_dataset) / effective_batch_size)
-    eval_steps = max(min(steps_per_epoch, 10_000) // 3, 1)
-    save_steps = eval_steps
-    eval_strategy = "steps"
-    save_strategy = "steps"
-    rank_logger("info", f"🔢 Using dynamic step-based evaluation/checkpointing every {eval_steps} steps (--eval_strategy=auto).")
-# Allow manual override of eval_steps if set
-if state.args_cli.eval_steps is not None and state.args_cli.eval_strategy != "epoch":
-    eval_steps = state.args_cli.eval_steps
-    save_steps = state.args_cli.eval_steps
-    rank_logger("info", f"📏 Overriding eval/save steps: {eval_steps}")
+    if state.args_cli.fields:
+        rank_logger("info", f"🧪 Structured metric evaluation active: {state.args_cli.fields}")
 
-if state.args_cli.fields:
-    rank_logger("info", f"🧪 Structured metric evaluation active: {state.args_cli.fields}")
+    # Determine optimizer: Adafactor by default, AdamW if --disable-adafactor is set
+    optim_type = "adamw_hf" if state.args_cli.disable_adafactor else "adafactor"
 
-# Determine optimizer: Adafactor by default, AdamW if --disable-adafactor is set
-optim_type = "adamw_hf" if state.args_cli.disable_adafactor else "adafactor"
+    args = Seq2SeqTrainingArguments(
+        run_name=f"{state.args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{state.args_cli.learning_rate}-ws{state.args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{DEFAULT_MAX_TARGET_LENGTH}-{DEFAULT_MAX_INPUT_LENGTH}",
+        logging_dir=f"logs/{state.args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{state.args_cli.learning_rate}-ws{state.args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{DEFAULT_MAX_TARGET_LENGTH}-{DEFAULT_MAX_INPUT_LENGTH}",
+        output_dir=state.args_cli.output_dir,
+        per_device_train_batch_size=base_batch_size,
+        per_device_eval_batch_size=base_batch_size,
+        num_train_epochs=state.args_cli.total_epochs,
+        eval_strategy=eval_strategy,
+        save_strategy=save_strategy,
+        eval_steps=eval_steps,
+        save_steps=save_steps,
+        save_total_limit=15,
+        logging_steps=50,
+        report_to="tensorboard",
+        load_best_model_at_end=True,
+        metric_for_best_model="combined" if state.args_cli.calculate_meteor else "rougeL",
+        greater_is_better=True,
+        predict_with_generate=True,
+        fp16=state.args_cli.enable_fp16,
+        learning_rate=state.args_cli.learning_rate,
+        warmup_steps=state.args_cli.warm_up_steps,
+        lr_scheduler_type=state.args_cli.lr_scheduler_type,
+        gradient_accumulation_steps=state.args_cli.gradient_accumulation_steps,
+        deepspeed=state.args_cli.deepspeed,
+        optim=optim_type,
+        generation_max_length=min(state.args_cli.max_target_length, 256),
+        generation_num_beams=1
+    )
 
-args = Seq2SeqTrainingArguments(
-    run_name=f"{state.args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{state.args_cli.learning_rate}-ws{state.args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{DEFAULT_MAX_TARGET_LENGTH}-{DEFAULT_MAX_INPUT_LENGTH}",
-    logging_dir=f"logs/{state.args_cli.task_name}-{model_name}-{dataset_name}-bs{base_batch_size}-lr{state.args_cli.learning_rate}-ws{state.args_cli.warm_up_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{DEFAULT_MAX_TARGET_LENGTH}-{DEFAULT_MAX_INPUT_LENGTH}",
-    output_dir=state.args_cli.output_dir,
-    per_device_train_batch_size=base_batch_size,
-    per_device_eval_batch_size=base_batch_size,
-    num_train_epochs=state.args_cli.total_epochs,
-    eval_strategy=eval_strategy,
-    save_strategy=save_strategy,
-    eval_steps=eval_steps,
-    save_steps=save_steps,
-    save_total_limit=15,
-    logging_steps=50,
-    report_to="tensorboard",
-    load_best_model_at_end=True,
-    metric_for_best_model="combined" if state.args_cli.calculate_meteor else "rougeL",
-    greater_is_better=True,
-    predict_with_generate=True,
-    fp16=state.args_cli.enable_fp16,
-    learning_rate=state.args_cli.learning_rate,
-    warmup_steps=state.args_cli.warm_up_steps,
-    lr_scheduler_type=state.args_cli.lr_scheduler_type,
-    gradient_accumulation_steps=state.args_cli.gradient_accumulation_steps,
-    deepspeed=state.args_cli.deepspeed,
-    optim=optim_type,
-    generation_max_length=min(state.args_cli.max_target_length, 256),
-    generation_num_beams=1
-)
+    # The run_name variable below is now redundant since it's incorporated above; remove if not used elsewhere.
+    # run_name = f"{model_name}-{dataset_name}-bs{base_batch_size}-lr{args.learning_rate}-ws{args.warmup_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
-# The run_name variable below is now redundant since it's incorporated above; remove if not used elsewhere.
-# run_name = f"{model_name}-{dataset_name}-bs{base_batch_size}-lr{args.learning_rate}-ws{args.warmup_steps}-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    writer = SummaryWriter(log_dir=str(args.logging_dir))
 
-writer = SummaryWriter(log_dir=str(args.logging_dir))
+    rank_logger("info", "🏋️ Beginning training loop...")
+    # Enable gradient checkpointing to save memory (especially helpful with DeepSpeed)
+    model.gradient_checkpointing_enable()
 
-rank_logger("info", "🏋️ Beginning training loop...")
-# Enable gradient checkpointing to save memory (especially helpful with DeepSpeed)
-model.gradient_checkpointing_enable()
-import time
-from transformers import Seq2SeqTrainer as HFSeq2SeqTrainer, TrainerCallback
-# Custom callback to log model output/label shapes on prediction step
-# === Helper for rank-prefixed logging ===
-from torch.distributed import is_initialized, get_rank
-
-class PredictionShapeLoggerCallback(TrainerCallback):
-    def on_prediction_step(self, args, state, control, **kwargs):
-        rank_logger("debug", f"Available kwargs: {list(kwargs.keys())}")
-        if 'model' in kwargs:
-            model = kwargs['model']
-            rank_logger("debug", f"Model: {type(model)}")
-        if 'inputs' in kwargs:
-            inputs = kwargs['inputs']
-            if isinstance(inputs, dict):
-                for key, value in inputs.items():
-                    if hasattr(value, 'shape'):
-                        pass
-            elif hasattr(inputs, 'shape'):
-                pass
-        if state:
-            step = getattr(state, 'prediction_step', None)
-            rank_logger("debug", f"Current step: {step if step is not None else 'N/A'}")
-        if args:
-            rank_logger("debug", f"Batch size: {args.per_device_eval_batch_size}")
-            if hasattr(args, 'generation_max_length'):
-                rank_logger("info", f"Max generation length: {args.generation_max_length}")        
-
-# === Trainer subclass: only save on rank 0 ===
-from typing import Optional
-class RankZeroOnlySaveTrainer(HFSeq2SeqTrainer):
-    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
-        if self.args.predict_with_generate and not prediction_loss_only:
-            self._start_time = time.time()
-            rank_logger("debug", "🔁 Generation started...")
-        outputs = super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
-        if self.args.predict_with_generate and not prediction_loss_only:
-            duration = time.time() - self._start_time
-            rank_logger("debug", f"✅ Generation complete in {duration:.2f}s")
-        return outputs
-    
-    def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = True):
-        if getattr(self.args, "local_rank", -1) not in [-1, 0]:
-            rank_logger("info", f"[rank{getattr(self.args, 'local_rank', -1)}] Skipping save_model.")
-            return
-        super().save_model(output_dir, _internal_call)
-
-from transformers import DataCollatorForSeq2Seq
-# Use test_dataset for ongoing eval, validation_dataset only for explicit post-training validation
-trainer = RankZeroOnlySaveTrainer(
-    model=model,
-    args=args,
-    train_dataset=state.train_dataset,
-    eval_dataset=state.test_dataset,
-    processing_class=tokenizer,
-    data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
-    callbacks=[
-        EarlyStoppingCallback(
-            early_stopping_patience=state.args_cli.early_stopping_patience,
-            early_stopping_threshold=state.args_cli.min_delta if state.args_cli.min_delta is not None else default_stopping_delta(state.args_cli),
+    # Use test_dataset for ongoing eval, validation_dataset only for explicit post-training validation
+    trainer = RankZeroOnlySaveTrainer(
+        model=model,
+        args=args,
+        train_dataset=state.train_dataset,
+        eval_dataset=state.test_dataset,
+        processing_class=tokenizer,
+        data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
+        callbacks=[
+            EarlyStoppingCallback(
+                early_stopping_patience=state.args_cli.early_stopping_patience,
+                early_stopping_threshold=state.args_cli.min_delta if state.args_cli.min_delta is not None else default_stopping_delta(state.args_cli),
+            ),
+            EpochNormalizedLogger(writer),
+            MemoryUsageLogger(model, state.args_cli.model_checkpoint, base_batch_size, input_size=512)
+        ],
+        compute_metrics=create_compute_metrics(
+            tokenizer=tokenizer,
+            calculate_meteor=state.args_cli.calculate_meteor
         ),
-        EpochNormalizedLogger(writer),
-        MemoryUsageLogger(model, state.args_cli.model_checkpoint, base_batch_size, input_size=512)
-    ],
-    compute_metrics=create_compute_metrics(
-        tokenizer=tokenizer,
-        calculate_meteor=state.args_cli.calculate_meteor
-    ),
-)
+    )
 
-trainer.train()
+    trainer.train()
 
-writer.close()
+    writer.close()
 
-# (Filtering log now occurs before split)
+    # (Filtering log now occurs before split)
 
-# Save final model to versioned path (main process only)
-save_main = is_main_process() and trainer.state.best_model_checkpoint is not None
-if save_main:
-    rank_logger("info", f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
-    root = Path(state.args_cli.output_dir)
-    i = 1
-    while Path(f"{root}-v{i}").exists():
-        i += 1
-    final_path = Path(f"{root}-v{i}")
-    final_path.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(final_path)
-    tokenizer.save_pretrained(final_path)
-    rank_logger("info", f"✅ Saved final model to {final_path}")
+    # Save final model to versioned path (main process only)
+    save_main = is_main_process() and trainer.state.best_model_checkpoint is not None
+    if save_main:
+        rank_logger("info", f"🌟 Best model loaded from: {trainer.state.best_model_checkpoint}")
+        root = Path(state.args_cli.output_dir)
+        i = 1
+        while Path(f"{root}-v{i}").exists():
+            i += 1
+        final_path = Path(f"{root}-v{i}")
+        final_path.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(final_path)
+        tokenizer.save_pretrained(final_path)
+        rank_logger("info", f"✅ Saved final model to {final_path}")
 
 if __name__ == "__main__":
     main()
