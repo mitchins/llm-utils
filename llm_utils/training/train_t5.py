@@ -60,6 +60,8 @@ DEFAULT_MAX_TARGET_LENGTH = 128
 logger = logging.getLogger(__name__)
 # TODO: probably switch to class based soon as the below globals are becoming messy
 is_tokenized = False
+train_dataset = None
+validation_dataset = None
 
 def rank_logger(level, message):
     if dist.is_available() and dist.is_initialized():
@@ -182,6 +184,7 @@ parser.add_argument("--deepspeed", type=str, default=None, help="Path to DeepSpe
 # Optimizer selection: allow disabling Adafactor
 parser.add_argument("--disable-adafactor", action="store_true", help="Use AdamW instead of Adafactor (default: Adafactor)")
 
+# TODO: remove the 'dir' part from the naming here
 # New CLI arguments for HuggingFace datasets from disk
 parser.add_argument("--train-dataset-dir", type=str, help="Path to a HuggingFace dataset directory for training (saved with save_to_disk())")
 parser.add_argument("--eval-dataset-dir", type=str, help="Optional path to evaluation dataset directory (if not provided, splits train)")
@@ -234,7 +237,6 @@ def main():
         rank_logger("info", "📂 Loading HuggingFace dataset from disk...")
         train_dataset = Dataset.load_from_disk(args_cli.train_dataset_dir)
 
-    validation_dataset = None
     if args_cli.eval_dataset_dir:
         eval_path = Path(args_cli.eval_dataset_dir)
         if eval_path.suffix == ".csv":
