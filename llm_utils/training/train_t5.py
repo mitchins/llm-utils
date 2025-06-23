@@ -596,7 +596,7 @@ def main():
             EpochNormalizedLogger(writer),
             MemoryUsageLogger(model, state.args_cli.model_checkpoint, base_batch_size, input_size=512)
         ],
-        compute_metrics=create_compute_metrics
+        compute_metrics=compute_metrics
     )
 
     trainer.train()
