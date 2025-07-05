@@ -331,13 +331,18 @@ def main():
 
     # Tokenizer
     model_checkpoint = args.model_checkpoint
-    # Only use slow tokenizer if necessary (e.g. for DeBERTa)
-    use_fast = not any(name in model_checkpoint.lower() for name in ["deberta", "xlnet", "t5", "bart"])
-    print(f"🔍 Loading tokenizer for {model_checkpoint} | use_fast={use_fast}")
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_checkpoint,
-        use_fast=use_fast
-    )
+    # Use DebertaV2Tokenizer only if "deberta" in model_checkpoint, else use AutoTokenizer with use_fast logic
+    if "deberta" in model_checkpoint.lower():
+        print(f"🔍 Forcing slow tokenizer for {model_checkpoint}")
+        from transformers import DebertaV2Tokenizer
+        tokenizer = DebertaV2Tokenizer.from_pretrained(model_checkpoint, use_fast=False)
+    else:
+        use_fast = not any(name in model_checkpoint.lower() for name in ["xlnet", "t5", "bart"])
+        print(f"🔍 Loading tokenizer for {model_checkpoint} | use_fast={use_fast}")
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_checkpoint,
+            use_fast=use_fast
+        )
     def tokenize_fn(example):
         max_length = 1024 if "deberta" in model_checkpoint.lower() else 512
         return tokenizer(
