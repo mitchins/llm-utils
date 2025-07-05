@@ -36,9 +36,10 @@ def process_llm_response(response, console=None):
         print(f"[bold yellow]Rejected:[/bold yellow] Invalid response format: {response.strip()}")
     return LLMResponse.FAILED
     
-def extract_json_array(text):
+def extract_json_structure(text):
     """
-    Extract JSON content from markdown-style code block or the first outermost JSON array/object using regex.
+    Extract JSON content from markdown-style code block or the first outermost JSON array or object using regex.
+    Supports both JSON arrays and dictionaries.
     """
     text = text.strip()
 
@@ -59,3 +60,14 @@ def extract_json_array(text):
         return cleaned
 
     return text
+
+import warnings
+
+# Deprecated alias for backwards compatibility
+def extract_json_array(*args, **kwargs):
+    warnings.warn(
+        "extract_json_array() is deprecated. Use extract_json_structure() instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    return extract_json_structure(*args, **kwargs)
