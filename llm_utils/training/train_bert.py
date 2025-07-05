@@ -332,9 +332,11 @@ def main():
     # Tokenizer
     model_checkpoint = args.model_checkpoint
     # Only use slow tokenizer if necessary (e.g. for DeBERTa)
+    use_fast = not any(name in model_checkpoint.lower() for name in ["deberta", "xlnet", "t5", "bart"])
+    print(f"🔍 Loading tokenizer for {model_checkpoint} | use_fast={use_fast}")
     tokenizer = AutoTokenizer.from_pretrained(
         model_checkpoint,
-        use_fast=False if "deberta" in model_checkpoint.lower() else True
+        use_fast=use_fast
     )
     def tokenize_fn(example):
         max_length = 1024 if "deberta" in model_checkpoint.lower() else 512
