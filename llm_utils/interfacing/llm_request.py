@@ -66,8 +66,19 @@ class LLMClient:
         elif response.status_code in (401, 403):
             raise LLMAccessDeniedError("Access denied: check authentication or permissions.")
         elif response.status_code == 400:
-            error_message = response.json().get("error", {}).get("message", "Invalid request")
-            raise LLMInvalidRequestError(f"Invalid request sent to LLM server: {error_message}")
+            try:
+                error_body = response.json()
+                error_message = error_body.get("error", {}).get("message", "Invalid request")
+            except Exception as parse_err:
+                error_message = f"Non-JSON error body: {response.text.strip()} (parse error: {parse_err})"
+
+            raise LLMInvalidRequestError(
+                f"Invalid request sent to LLM server.\n"
+                f"Payload: {payload}\n"
+                f"Status Code: {response.status_code}\n"
+                f"Error Message: {error_message}\n"
+                f"Raw Response: {response.text.strip()}"
+            )
         elif response.status_code != 200:
             raise LLMUnexpectedResponseError(f"Unexpected LLM error: {response.status_code} - {response.text}")
 
