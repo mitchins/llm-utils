@@ -189,6 +189,13 @@ Some long winded justification."""
             self.assertEqual(result, LLMResponse.AFFIRMATIVE)
             self.console.print.assert_not_called()
 
+    def test_double_star_prompt_double_star_negative(self):
+            response = """**Y/N**: **No**
+The narrative does not contain a shift in location, characters, or theme that would indicate a new scene or section. It remains centered on Eric Hainny’s office setting, with the introduction of Agent Dillon Savich as a character and their dialogue occurring within the same context. The transition to the phone call and Savich’s backstory is part of the ongoing narrative without a clear break in location or thematic focus."""
+            result = process_llm_response(response, self.console)
+            self.assertEqual(result, LLMResponse.NEGATIVE)
+            self.console.print.assert_not_called()
+
 class TestJsonExtractionUtility(unittest.TestCase):
     def test_plain_json_only(self):
         text = '[{"name": "Alice", "aliases": []}, {"name": "Bob", "aliases": []}]'

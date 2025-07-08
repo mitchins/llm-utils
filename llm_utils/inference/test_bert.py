@@ -17,12 +17,12 @@ import torch.nn.functional as F
 from transformers import AutoModelForTokenClassification, AutoModelForSequenceClassification
 from huggingface_hub import hf_hub_download
 
-def load_model(path: str) -> Tuple[torch.nn.Module, AutoTokenizer, str]:
+def load_model(path: str) -> Tuple[torch.nn.Module, AutoTokenizer, str, int]:
     if "flair/" in path:
         from flair.data import Sentence
         from flair.models import SequenceTagger
         model = SequenceTagger.load(path)
-        return model, None, "flair"
+        return model, None, "flair", 0
     arch = None
     config_path = os.path.join(path, "config.json")
     if os.path.exists(config_path):
@@ -35,6 +35,8 @@ def load_model(path: str) -> Tuple[torch.nn.Module, AutoTokenizer, str]:
             config = json.load(f)
         arch = config.get("architectures", [""])[0]
 
+    num_labels = config.get("num_labels", 2)
+
     if "TokenClassification" in arch:
         model: torch.nn.Module = AutoModelForTokenClassification.from_pretrained(path)
         model_type = "token"
@@ -45,7 +47,7 @@ def load_model(path: str) -> Tuple[torch.nn.Module, AutoTokenizer, str]:
         raise ValueError(f"Unknown architecture: {arch}")
 
     tokenizer = AutoTokenizer.from_pretrained(path)
-    return model, tokenizer, model_type
+    return model, tokenizer, model_type, num_labels
 
 # Suppress non-critical logging from Hugging Face Transformers and Torch
 import logging
@@ -59,8 +61,9 @@ def load_label_encoder(path):
     encoder.classes_ = np.array(data["classes"])
     return encoder
 
-def predict_single(text, model, tokenizer, label_encoder, device, min_confidence=None, model_type="sequence"):
+def predict_single(text, model, tokenizer, label_encoder, device, min_confidence=None, model_type="sequence", is_binary_sigmoid=False):
     if model_type == "flair":
+        from flair.data import Sentence
         sentence = Sentence(text)
         model.predict(sentence)
         entities = []
@@ -78,9 +81,14 @@ def predict_single(text, model, tokenizer, label_encoder, device, min_confidence
         inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True).to(device)
     outputs = model(**inputs)
     logits = outputs.logits
-    probs = F.softmax(logits, dim=1).detach().cpu().numpy()[0]
-    top_prob = probs.max()
-    prediction = torch.argmax(logits, dim=1).item()
+    if is_binary_sigmoid:
+        score = torch.sigmoid(logits).item()
+        probs = [1 - score, score]
+        prediction = int(score > 0.5)
+    else:
+        probs = F.softmax(logits, dim=1).detach().cpu().numpy()[0]
+        prediction = torch.argmax(logits, dim=1).item()
+    top_prob = max(probs)
 
     if min_confidence and top_prob < min_confidence:
         return "uncertain", probs
@@ -88,7 +96,7 @@ def predict_single(text, model, tokenizer, label_encoder, device, min_confidence
     label = label_encoder.inverse_transform([prediction])[0]
     return label, probs
 
-def handle_prediction_output(text, pred, probs, label, model_type, detail=False):
+def handle_prediction_output(text, pred, probs, label, model_type, detail=False, is_binary_sigmoid=False):
     if model_type == "flair":
         if not pred:
             print("⚠️ No entities found.")
@@ -107,7 +115,7 @@ def handle_prediction_output(text, pred, probs, label, model_type, detail=False)
             display_text = text if len(text) < 100 else text[:97] + "..."
             print(f"[{label}] — Text: {display_text}")
 
-def run_repl(model, tokenizer, label_encoder, device, min_confidence=None, model_type="sequence", nli_mode=False):
+def run_repl(model, tokenizer, label_encoder, device, min_confidence=None, model_type="sequence", nli_mode=False, is_binary_sigmoid=False):
     print("📥 Interactive REPL mode. Type input to classify. Ctrl+C to exit.")
     while True:
         try:
@@ -117,13 +125,13 @@ def run_repl(model, tokenizer, label_encoder, device, min_confidence=None, model
                 text = (premise, hypothesis)
             else:
                 text = input(">>> ")
-            pred, probs = predict_single(text, model, tokenizer, label_encoder, device, min_confidence, model_type)
-            handle_prediction_output(text, pred, probs, None, model_type)
+            pred, probs = predict_single(text, model, tokenizer, label_encoder, device, min_confidence, model_type, is_binary_sigmoid)
+            handle_prediction_output(text, pred, probs, None, model_type, is_binary_sigmoid=is_binary_sigmoid)
         except KeyboardInterrupt:
             print("\n👋 Exiting REPL.")
             break
 
-def evaluate_bulk(data_path, model, tokenizer, label_encoder, device, text_field="text", label_field="label", min_confidence=None, detail=False, model_type="sequence"):
+def evaluate_bulk(data_path, model, tokenizer, label_encoder, device, text_field="text", label_field="label", min_confidence=None, detail=False, model_type="sequence", is_binary_sigmoid=False):
     dataset_obj = load_dataset("json", data_files=data_path)
     dataset = dataset_obj["train"] if isinstance(dataset_obj, dict) and "train" in dataset_obj else dataset_obj
     if not isinstance(dataset, Dataset):
@@ -141,9 +149,9 @@ def evaluate_bulk(data_path, model, tokenizer, label_encoder, device, text_field
         item = cast(dict[str, Any], item)
         text = item[text_field]
         label = cast(dict, Any).get(label_field)
-        pred, probs = predict_single(text, model, tokenizer, label_encoder, device, min_confidence, model_type)
+        pred, probs = predict_single(text, model, tokenizer, label_encoder, device, min_confidence, model_type, is_binary_sigmoid)
 
-        handle_prediction_output(text, pred, probs, label, model_type=model_type, detail=detail)
+        handle_prediction_output(text, pred, probs, label, model_type=model_type, detail=detail, is_binary_sigmoid=is_binary_sigmoid)
 
         if label is None:
             ambiguous_total += 1
@@ -182,7 +190,7 @@ def main():
     parser.add_argument("--nli", action="store_true", help="Enable Natural Language Inference mode (premise + hypothesis input)")
     args = parser.parse_args()
 
-    model, tokenizer, model_type = load_model(args.model_path)
+    model, tokenizer, model_type, num_labels = load_model(args.model_path)
     print(f"📦 Loaded model type: {model_type}")
     if model_type != "flair":
         if args.labels:
@@ -198,17 +206,23 @@ def main():
                     f"Missing label_encoder.json and no --labels provided. "
                     f"Please supply --labels 'label1,label2' or include label_encoder.json."
                 )
+        if num_labels == 1 and len(label_encoder.classes_) == 2:
+            print("ℹ️ Binary sigmoid model detected — will apply threshold logic.")
+            is_binary_sigmoid = True
+        else:
+            is_binary_sigmoid = False
     else:
         label_encoder = None
+        is_binary_sigmoid = False
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if model_type != "flair":
         model.to(device)
         model.eval()
 
     if args.data_path:
-        evaluate_bulk(args.data_path, model, tokenizer, label_encoder, device, args.text_field, args.label_field, args.min_confidence, args.detail, model_type)
+        evaluate_bulk(args.data_path, model, tokenizer, label_encoder, device, args.text_field, args.label_field, args.min_confidence, args.detail, model_type, is_binary_sigmoid)
     else:
-        run_repl(model, tokenizer, label_encoder, device, args.min_confidence, model_type, args.nli)
+        run_repl(model, tokenizer, label_encoder, device, args.min_confidence, model_type, args.nli, is_binary_sigmoid)
 
 if __name__ == "__main__":
     main()
