@@ -1,5 +1,40 @@
 # llm-utils
-Training and interface scripts for llms that are general purpose
+Training and interface scripts for LLMs that are general purpose. The library
+contains helpers for preparing datasets, running model training and sending
+requests to OpenAI-compatible endpoints.
+
+## Installation
+
+Clone the repository and install in editable mode so the command line scripts
+are available:
+
+```bash
+pip install -e .
+```
+
+## Key scripts
+
+`train-bert` trains a BERT style classifier or regressor. The script exposes
+many command line arguments but the minimal invocation looks like:
+
+```bash
+train-bert --data-path training_data.jsonl --output-dir bert_model
+```
+
+`llm-request` provides a simple interface to query a running LLM server:
+
+```bash
+llm-request "Hello" --model my-model --base-url http://localhost:8000
+```
+
+## Running the tests
+
+The test suite uses **pytest**. Install the optional test dependencies and run:
+
+```bash
+pytest
+```
+
 
 ## MockLLMClient
 
