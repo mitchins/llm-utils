@@ -1,3 +1,9 @@
+"""Utility for semantic sampling of datasets.
+
+The CLI uses generic example file names (e.g. ``input.csv``) only as
+placeholders. Provide paths to your own datasets when invoking this script.
+"""
+
 import csv
 import random
 import argparse
@@ -182,8 +188,19 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input', type=str, default='book_categories_nonfiction_cleaned.csv')
-    parser.add_argument('--output', type=str, default='training_nonfiction_sampled.csv')
+    # Generic default names are provided purely as placeholders.
+    parser.add_argument(
+        '--input',
+        type=str,
+        default='input.csv',
+        help='Path to the input dataset (replace with your file)'
+    )
+    parser.add_argument(
+        '--output',
+        type=str,
+        default='sampled_output.csv',
+        help='Output path for the sampled dataset (replace if needed)'
+    )
     parser.add_argument('--count', type=int, default=143084)
     parser.add_argument('--label-field', type=str, default='classification')
     parser.add_argument('--holdout', type=float, default=0.0)
