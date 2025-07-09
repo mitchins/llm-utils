@@ -1,3 +1,8 @@
+"""Plot per-class F1 scores stored in TensorBoard logs.
+
+Usage: python graph_class_f1_eval.py [LOG_DIR]
+"""
+
 import os
 import sys
 import matplotlib.pyplot as plt
@@ -5,13 +10,6 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 
 # Directory containing the TensorBoard event file(s)
 log_dir = sys.argv[1] if len(sys.argv) > 1 else "./logs"
-
-
-# Dynamically collect all class_eval F1 tags
-ea = EventAccumulator(event_file)
-ea.Reload()
-all_tags = ea.Tags().get("scalars", [])
-f1_tags = [tag for tag in all_tags if tag.startswith("class_eval/f1_")]
 
 # Walk log_dir and locate event files
 event_files = []
@@ -24,9 +22,16 @@ if not event_files:
     print("❌ No TensorBoard event files found.")
     sys.exit(1)
 
+
 # Use the latest event file
 event_file = sorted(event_files)[-1]
 print(f"📊 Loading: {event_file}")
+
+# Dynamically collect all class_eval F1 tags
+ea = EventAccumulator(event_file)
+ea.Reload()
+all_tags = ea.Tags().get("scalars", [])
+f1_tags = [tag for tag in all_tags if tag.startswith("class_eval/f1_")]
 
 # Plotting
 plt.figure(figsize=(12, 6))
