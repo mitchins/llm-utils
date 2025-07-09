@@ -6,10 +6,21 @@ requests to OpenAI-compatible endpoints.
 ## Installation
 
 Clone the repository and install in editable mode so the command line scripts
-are available:
+are available. By default only the lightweight dependencies used by
+`llm-request` are installed. Extra groups are provided for training, Google
+Gemini support and test utilities.
 
 ```bash
-pip install -e .
+pip install -e .            # minimal install with httpx only
+
+# Install training extras
+pip install -e .[training]
+
+# Install Google Gemini extras
+pip install -e .[google]
+
+# Install test extras
+pip install -e .[test]
 ```
 
 ## Key scripts
@@ -32,7 +43,18 @@ llm-request "Hello" --model my-model --base-url http://localhost:8000
 The test suite uses **pytest**. Install the optional test dependencies and run:
 
 ```bash
+pip install -e .[test]
 pytest
+```
+
+## Google Gemini client
+
+The `GoogleLLMClient` allows interfacing with Google's Generative AI models.
+Install the optional extras and set `GEMINI_API_KEY`:
+
+```bash
+pip install -e .[google]
+export GEMINI_API_KEY=your-key-here
 ```
 
 
