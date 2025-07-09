@@ -1,6 +1,10 @@
 from abc import ABC, abstractmethod
 
 
+class LLMError(Exception):
+    """Base exception for all LLM clients."""
+
+
 class BaseLLMClient(ABC):
     def __init__(self, model_name=None):
         """
