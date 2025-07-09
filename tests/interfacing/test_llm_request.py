@@ -3,7 +3,7 @@ import httpx
 import json
 import pytest
 import os
-from llm_utils.interfacing.llm_request import LLMClient
+from llm_utils.interfacing.llm_request import OpenAILikeLLMClient
 from llm_utils.interfacing.llm_request import (
     LLMTimeoutError,
     LLMConnectionError,
@@ -27,7 +27,7 @@ class TestLLMClient:
 
     def test_default_values(self, monkeypatch):
         transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"choices": [{"message": {"content": "mock"}}]}))
-        client = LLMClient(client=httpx.Client(transport=transport))
+        client = OpenAILikeLLMClient(client=httpx.Client(transport=transport))
         assert client.system_prompt == "You are a helpful and concise assistant."
         assert client.model == "qwen:14b"
         assert client.base_url == "http://localhost:1234/v1"
@@ -39,7 +39,7 @@ class TestLLMClient:
 
         transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"choices": [{"message": {"content": "mock"}}]}))
 
-        client = LLMClient(client=httpx.Client(transport=transport))
+        client = OpenAILikeLLMClient(client=httpx.Client(transport=transport))
 
         assert client.system_prompt == "Test prompt."
         assert client.model == "test-model"
@@ -52,7 +52,7 @@ class TestLLMClient:
 
         transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"choices": [{"message": {"content": "mock"}}]}))
 
-        client = LLMClient(
+        client = OpenAILikeLLMClient(
             system_prompt="Manual prompt.",
             model="manual-model",
             base_url="http://manual-server",
@@ -76,7 +76,7 @@ class TestLLMClient:
 
         transport = httpx.MockTransport(handler)
 
-        client = LLMClient(client=httpx.Client(transport=transport))
+        client = OpenAILikeLLMClient(client=httpx.Client(transport=transport))
 
         prompt_text = "Tell me a joke."
         result = client.chat(prompt_text)
@@ -97,7 +97,7 @@ class TestLLMClient:
 
         transport = httpx.MockTransport(timeout_handler)
 
-        client = LLMClient(client=httpx.Client(transport=transport))
+        client = OpenAILikeLLMClient(client=httpx.Client(transport=transport))
 
         with pytest.raises(LLMTimeoutError):
             client.chat("Trigger timeout")
@@ -108,7 +108,7 @@ class TestLLMClient:
 
         transport = httpx.MockTransport(broken_handler)
 
-        client = LLMClient(client=httpx.Client(transport=transport))
+        client = OpenAILikeLLMClient(client=httpx.Client(transport=transport))
 
         with pytest.raises(LLMConnectionError):
             client.chat("Trigger connection error")
@@ -122,7 +122,7 @@ class TestLLMClient:
 
         transport = httpx.MockTransport(model_not_found_handler)
 
-        client = LLMClient(model="gibberish-model-name", client=httpx.Client(transport=transport))
+        client = OpenAILikeLLMClient(model="gibberish-model-name", client=httpx.Client(transport=transport))
 
         with pytest.raises(LLMModelNotFoundError):
             client.chat("Test with missing model")
@@ -136,7 +136,7 @@ class TestLLMClient:
 
         transport = httpx.MockTransport(access_denied_handler)
 
-        client = LLMClient(client=httpx.Client(transport=transport))
+        client = OpenAILikeLLMClient(client=httpx.Client(transport=transport))
 
         with pytest.raises(LLMAccessDeniedError):
             client.chat("Trigger access denied")
@@ -150,7 +150,7 @@ class TestLLMClient:
 
         transport = httpx.MockTransport(invalid_request_handler)
 
-        client = LLMClient(client=httpx.Client(transport=transport))
+        client = OpenAILikeLLMClient(client=httpx.Client(transport=transport))
 
         with pytest.raises(LLMInvalidRequestError):
             client.chat("Trigger invalid request")
@@ -164,9 +164,8 @@ class TestLLMClient:
 
         transport = httpx.MockTransport(server_error_handler)
 
-        client = LLMClient(client=httpx.Client(transport=transport))
+        client = OpenAILikeLLMClient(client=httpx.Client(transport=transport))
 
         with pytest.raises(LLMUnexpectedResponseError) as exc_info:
             client.chat("Trigger internal server error")
-
         assert "Internal Server Error" in str(exc_info.value)
