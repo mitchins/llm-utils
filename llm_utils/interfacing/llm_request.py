@@ -1,6 +1,8 @@
 import httpx
 import os
 
+from .base_client import BaseLLMClient
+
 class LLMError(Exception):
     """Base exception for LLMClient errors."""
 
@@ -25,15 +27,16 @@ class LLMUnexpectedResponseError(LLMError):
 DEFAULT_MODEL = os.getenv("LLM_MODEL", "qwen:14b")
 DEFAULT_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:1234/v1")
 
-class LLMClient:
+class LLMClient(BaseLLMClient):
     def __init__(self, model=None, base_url=None, timeout=60, system_prompt=None, temperature=0.7, max_tokens=1024, repetition_penalty=1.1, client=None):
-        self.model = model or os.getenv("LLM_MODEL", "qwen:14b")
-        self.base_url = base_url or os.getenv("LLM_BASE_URL", "http://localhost:1234/v1")
-        self.timeout = timeout
-        self.system_prompt = system_prompt or os.getenv("LLM_SYSTEM_PROMPT", "You are a helpful and concise assistant.")
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self.repetition_penalty = repetition_penalty
+        super().__init__(model=model or os.getenv("LLM_MODEL", "qwen:14b"),
+                         base_url=base_url or os.getenv("LLM_BASE_URL", "http://localhost:1234/v1"),
+                         timeout=timeout,
+                         system_prompt=system_prompt or os.getenv("LLM_SYSTEM_PROMPT", "You are a helpful and concise assistant."),
+                         temperature=temperature,
+                         max_tokens=max_tokens,
+                         repetition_penalty=repetition_penalty)
+
         self.client = client or httpx.Client(timeout=httpx.Timeout(self.timeout, connect=self.timeout, read=self.timeout, write=self.timeout))
 
     def chat(self, prompt, temperature=None, max_tokens=None, repetition_penalty=None, stream=False):
