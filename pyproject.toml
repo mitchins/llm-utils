@@ -9,10 +9,15 @@ license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "httpx"
+]
+
+[project.optional-dependencies]
+training = [
     "transformers>=4.41.0",
     "scikit-learn",
     "pandas",
-    "torch",               # Or specific version
+    "torch",
     "datasets",
     "numpy",
     "tqdm",
@@ -21,6 +26,14 @@ dependencies = [
     "urllib3",
     "safetensors",
     "tensorboard"
+]
+test = [
+    "pytest",
+    "numpy",
+    "httpx"
+]
+google = [
+    "google-generativeai",
 ]
 
 [project.urls]
