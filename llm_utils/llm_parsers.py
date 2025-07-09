@@ -19,7 +19,6 @@ def process_llm_response(response, console=None):
             # Fallback: scrub line of known prompt pattern and re-evaluate
             fallback_cleaned = re.sub(r"^.*?\[\s*y\s*/?\s*n\s*\]\s*[:：]?\s*", "", cleaned, flags=re.IGNORECASE | re.DOTALL).strip()
             fallback_cleaned = re.sub(r"^.*?\*\*[yn]\*\*", lambda m: m.group(0)[-4:], fallback_cleaned, flags=re.IGNORECASE)
-            print(fallback_cleaned)
             token = re.sub(r'\s+', '', fallback_cleaned.lower())
             match = re.match(r"^\w+ ?[\[\(\*'\"#]*([yn])[\]\)\*'\"#.:]*", token)
 
@@ -69,5 +68,4 @@ def extract_json_array(*args, **kwargs):
         "extract_json_array() is deprecated. Use extract_json_structure() instead.",
         DeprecationWarning,
         stacklevel=2
-    )
-    return extract_json_structure(*args, **kwargs)
+    )    return extract_json_structure(*args, **kwargs)
