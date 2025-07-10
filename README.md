@@ -3,6 +3,32 @@ Training and interface scripts for LLMs that are general purpose. The library
 contains helpers for preparing datasets, running model training and sending
 requests to OpenAI-compatible endpoints.
 
+## Capabilities
+
+The repository is organised by feature area so you can quickly locate the
+relevant utilities:
+
+- **Data utilities** (`llm_utils/data/`)
+  - `analyze_token_lengths.py` – check average token counts
+  - `intersect_dataset.py` – find the overlap between datasets
+  - `semantic_sample.py` – draw a semantically diverse subset
+- **Training scripts** (`llm_utils/training/`)
+  - `train_bert.py` and `train_bert_ner.py` – fine-tune BERT models
+  - `train_t5.py` – fine-tune T5 style models
+  - `prepare_dataset.py` – convert common formats
+- **Inference tools** (`llm_utils/inference/`)
+  - `run_bert.py` and `run_t5.py` – load a trained model for prediction
+- **Interfacing helpers** (`llm_utils/interfacing/`)
+  - `llm_request.py` – simple command line client
+  - `google_genai_client.py` – Google Gemini implementation
+  - `mock_client.py` – client for tests
+  - `client_factory.py` and `base_client.py`
+- **Output parsing** (`llm_utils/llm_parsers.py`)
+  - Utilities to extract structured responses from models
+
+Additional scripts such as `semantic_sample.py` at the repository root and the
+`tests/` directory demonstrate typical usage of these tools.
+
 ## Installation
 
 Clone the repository and install in editable mode so the command line scripts
