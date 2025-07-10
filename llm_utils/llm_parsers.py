@@ -34,7 +34,20 @@ def process_llm_response(response, console=None):
     else:
         print(f"[bold yellow]Rejected:[/bold yellow] Invalid response format: {response.strip()}")
     return LLMResponse.FAILED
-    
+
+# TODO: Write tests independent of json parsing
+def scrub_think(text: str) -> str:
+    """
+    Remove any <think>...</think> or <reasoning>...</reasoning> tags,
+    including HTML-escaped forms.
+    """
+    # Remove HTML-escaped tags
+    cleaned = re.sub(r"&lt;/?(?:think|reasoning)&gt;", "", text, flags=re.IGNORECASE)
+    # Remove explicit tags
+    cleaned = re.sub(r"<(?:think|reasoning)>.*?</(?:think|reasoning)>", "", cleaned,
+                     flags=re.DOTALL | re.IGNORECASE)
+    return cleaned
+
 def extract_json_structure(text):
     """
     Extract JSON content from markdown-style code block or the first outermost JSON array or object using regex.
@@ -43,8 +56,7 @@ def extract_json_structure(text):
     text = text.strip()
 
     # Remove <think>...</think> or <reasoning>...</reasoning> sections if present
-    text = re.sub(r"&lt;/?(?:think|reasoning)&gt;", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"<(?:think|reasoning)>.*?</(?:think|reasoning)>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = scrub_think(text)
 
     # Try markdown-style fenced block first
     match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)

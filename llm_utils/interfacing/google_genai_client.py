@@ -31,6 +31,8 @@ class GoogleLLMClient(BaseLLMClient):
         self.max_output_tokens = max_output_tokens
 
     def generate(self, prompt, system="", temperature=0.0) -> str:
+        if not prompt or len(prompt) == 0:
+            raise ValueError("Prompt must not be empty for GoogleLLMClient.")
         if not self.model:
             raise ValueError("Model name must be set for GoogleLLMClient.")
 
