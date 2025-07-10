@@ -36,7 +36,7 @@ class MockLLMClient(BaseLLMClient):
                 responses = json.load(fh)
         self._responses: Dict[Tuple[str, str, str, float], str] = {}
         for entry in responses:  # type: ignore[assignment]
-            model = entry.get("model", self.model_name)
+            model = entry.get("model", self.model)
             system = entry.get("system", "")
             prompt = entry.get("prompt")
             temperature = float(entry.get("temperature", 0.0))
@@ -51,7 +51,7 @@ class MockLLMClient(BaseLLMClient):
         return model, system, prompt, temperature
 
     def generate(self, prompt: str, system: str = "", temperature: float = 0.0) -> str:
-        key = self._make_key(self.model_name, system, prompt, temperature)
+        key = self._make_key(self.model, system, prompt, temperature)
         if key not in self._responses:
             raise LLMError(f"No mock response for request: {key}")
         return self._responses[key]

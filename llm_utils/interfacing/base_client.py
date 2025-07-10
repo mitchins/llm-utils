@@ -13,7 +13,7 @@ class BaseLLMClient(ABC):
         Args:
             model_name (str, optional): Name of the model. Defaults to None.
         """
-        self.model_name = model_name
+        self.model = model_name
 
     @abstractmethod
     def generate(self, prompt, system="", temperature=0.0) -> str:

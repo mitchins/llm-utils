@@ -23,7 +23,7 @@ def create_client(provider: LLMProvider, model_name: str = None, **kwargs) -> Ba
         BaseLLMClient: An instance of a class implementing BaseLLMClient.
     """
     if provider == LLMProvider.GEMINI:
-        return GoogleLLMClient(model_name=model_name)
+        return GoogleLLMClient(model=model_name, **kwargs)
     elif provider in {LLMProvider.OPENAI, LLMProvider.LOCAL}:
         return OpenAILikeLLMClient(model=model_name, **kwargs)
     else:

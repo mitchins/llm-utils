@@ -1,5 +1,3 @@
-
-
 import os
 import logging
 from llm_utils.interfacing.base_client import BaseLLMClient
@@ -18,27 +16,33 @@ logger = logging.getLogger(__name__)
 class GoogleLLMClient(BaseLLMClient):
     """A client for Google's Generative AI models (Gemini)."""
 
-    def __init__(self, model_name=None):
-        super().__init__(model_name)
-        api_key = os.getenv("GEMINI_API_KEY")
-        if api_key:
-            genai.configure(api_key=api_key)
-        else:
+    def __init__(self,
+                 model=None,
+                 api_key: str = None,
+                 timeout: int = 60,
+                 max_output_tokens: int = 4096,
+                 **kwargs):
+        super().__init__(model)
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        if not self.api_key:
             raise ValueError("GEMINI_API_KEY environment variable is not set. Please set it to use the Google LLM client.")
+        genai.configure(api_key=self.api_key)
+        self.timeout = timeout
+        self.max_output_tokens = max_output_tokens
 
     def generate(self, prompt, system="", temperature=0.0) -> str:
-        if not self.model_name:
+        if not self.model:
             raise ValueError("Model name must be set for GoogleLLMClient.")
 
         try:
             model_instance = genai.GenerativeModel(
-                model_name=self.model_name,
+                model_name=self.model,
                 system_instruction=system if system else None,
             )
 
             generation_config = types.GenerationConfig(
                 temperature=temperature,
-                max_output_tokens=4096,
+                max_output_tokens=self.max_output_tokens,
             )
 
             safety_settings = {

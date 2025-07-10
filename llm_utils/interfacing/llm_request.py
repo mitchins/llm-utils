@@ -1,8 +1,6 @@
 import httpx
 import os
-
-class LLMError(Exception):
-    """Base exception for LLMClient errors."""
+from .base_client import BaseLLMClient, LLMError
 
 class LLMTimeoutError(LLMError):
     """Raised when the LLM request times out."""
@@ -25,7 +23,7 @@ class LLMUnexpectedResponseError(LLMError):
 DEFAULT_MODEL = os.getenv("LLM_MODEL", "qwen:14b")
 DEFAULT_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:1234/v1")
 
-class OpenAILikeLLMClient:
+class OpenAILikeLLMClient(BaseLLMClient):
     def __init__(self, model=None, base_url=None, timeout=60, system_prompt=None, temperature=0.7, max_tokens=1024, repetition_penalty=1.1, client=None):
         self.model = model or os.getenv("LLM_MODEL", "qwen:14b")
         self.base_url = base_url or os.getenv("LLM_BASE_URL", "http://localhost:1234/v1")
@@ -41,6 +39,21 @@ class OpenAILikeLLMClient:
             )
         )
 
+    # This just wraps the original chat method to match the new interface
+    def generate(self, prompt: str, system: str = "", temperature: float = 0.0) -> str:
+        if system:
+            self.system_prompt = system.strip()
+        
+        response = self.chat(
+            prompt=prompt,
+            temperature=temperature if temperature is not None else self.temperature,
+            max_tokens=self.max_tokens,
+            repetition_penalty=self.repetition_penalty,
+            stream=False
+        )
+        return response
+    
+    # Holdover from the original interface
     def chat(self, prompt, temperature=None, max_tokens=None, repetition_penalty=None, stream=False):
         if stream:
             raise NotImplementedError("Streaming is not supported yet.")
