@@ -6,7 +6,7 @@ class LLMError(Exception):
 
 
 class BaseLLMClient(ABC):
-    def __init__(self, model_name=None):
+    def __init__(self, model_name=None, system_prompt=None):
         """
         Abstract base class for LLM clients.
 
@@ -14,6 +14,7 @@ class BaseLLMClient(ABC):
             model_name (str, optional): Name of the model. Defaults to None.
         """
         self.model = model_name
+        self.system_prompt = system_prompt or "You are a helpful assistant."
 
     @abstractmethod
     def generate(self, prompt, system="", temperature=0.0) -> str:

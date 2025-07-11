@@ -1,5 +1,5 @@
 import unittest
-from llm_utils.llm_parsers import process_llm_response, LLMResponse, extract_json_array
+from llm_utils.llm_parsers import process_llm_response, LLMResponse, extract_json_structure
 from unittest.mock import MagicMock
 
 
@@ -199,7 +199,7 @@ The narrative does not contain a shift in location, characters, or theme that wo
 class TestJsonExtractionUtility(unittest.TestCase):
     def test_plain_json_only(self):
         text = '[{"name": "Alice", "aliases": []}, {"name": "Bob", "aliases": []}]'
-        result = extract_json_array(text)
+        result = extract_json_structure(text)
         self.assertEqual(result, text)
 
     def test_fenced_json_block(self):
@@ -210,13 +210,13 @@ class TestJsonExtractionUtility(unittest.TestCase):
           ]
           ```"""
         expected = '[\n              {"name": "Alice", "aliases": []},\n              {"name": "Bob", "aliases": []}\n          ]'
-        result = extract_json_array(text)
+        result = extract_json_structure(text)
         self.assertEqual(result.strip(), expected.strip())
 
     def test_json_with_prefix_text(self):
         text = "Here you go:\n[\n  {\"name\": \"Alice\", \"aliases\": []},\n  {\"name\": \"Bob\", \"aliases\": []}\n]"
         expected = '[\n  {"name": "Alice", "aliases": []},\n  {"name": "Bob", "aliases": []}\n]'
-        result = extract_json_array(text)
+        result = extract_json_structure(text)
         self.assertEqual(result.strip(), expected.strip())
 
 if __name__ == '__main__':

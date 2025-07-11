@@ -71,14 +71,3 @@ def extract_json_structure(text):
         return cleaned
 
     return text
-
-import warnings
-
-# Deprecated alias for backwards compatibility
-def extract_json_array(*args, **kwargs):
-    warnings.warn(
-        "extract_json_array() is deprecated. Use extract_json_structure() instead.",
-        DeprecationWarning,
-        stacklevel=2
-    )
-    return extract_json_structure(*args, **kwargs)

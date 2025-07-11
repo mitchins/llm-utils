@@ -1,5 +1,5 @@
 import json
-from typing import Iterable, Mapping, Tuple, Union, List, Dict
+from typing import Iterable, Mapping, Tuple, Union, List, Dict, Callable, Optional
 
 from .base_client import BaseLLMClient, LLMError
 
@@ -29,6 +29,7 @@ class MockLLMClient(BaseLLMClient):
         self,
         responses: Union[str, Iterable[Mapping[str, Union[str, float]]]],
         model_name: str | None = None,
+        on_request: Optional[Callable] = None,
     ) -> None:
         super().__init__(model_name)
         if isinstance(responses, str):
@@ -45,13 +46,24 @@ class MockLLMClient(BaseLLMClient):
                 raise ValueError("Each entry must include 'prompt' and 'response'")
             key = self._make_key(model, system, prompt, temperature)
             self._responses[key] = response
+        self._on_request = on_request
 
     @staticmethod
     def _make_key(model: str, system: str, prompt: str, temperature: float) -> Tuple[str, str, str, float]:
         return model, system, prompt, temperature
 
     def generate(self, prompt: str, system: str = "", temperature: float = 0.0) -> str:
+        if self._on_request:
+            override = self._on_request(prompt=prompt, system=system, temperature=temperature)
+            if override is not None:
+                return override
         key = self._make_key(self.model, system, prompt, temperature)
         if key not in self._responses:
             raise LLMError(f"No mock response for request: {key}")
         return self._responses[key]
+
+    def prompt(self, prompt: str, system: str = "", temperature: float = 0.0) -> str:
+        """
+        Alias for generate, plus supports callback override.
+        """
+        return self.generate(prompt, system=system, temperature=temperature)
