@@ -159,6 +159,7 @@ def main():
     parser.add_argument("--logging-dir", type=str, default="logs", help="Directory for TensorBoard logs")
     parser.add_argument("--stratify", action="store_true", help="Enable stratified split by label for eval set")
     parser.add_argument("--batch-size", type=int, default=None, help="Override batch size (default is auto-detected)")
+    parser.add_argument("--bf16", action="store_true", default=False, help="Enable BF16 mixed precision training (default: FP32)")
     args = parser.parse_args()
     import random
     torch.manual_seed(args.seed)
@@ -439,8 +440,8 @@ def main():
         warmup_steps=400,
         max_grad_norm=1.0,
         lr_scheduler_type="cosine",
-        fp16=True,
-        bf16=False,
+        fp16=False,
+        bf16=args.bf16,
         include_for_metrics=["loss"],
         label_names=["labels"],
     )

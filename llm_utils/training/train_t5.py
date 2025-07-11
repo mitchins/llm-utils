@@ -2,7 +2,7 @@ import json
 import numpy as np  # Ensure this import is at the top
 import argparse
 from pathlib import Path
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, Dataset, Value
 import evaluate
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, Seq2SeqTrainer, Seq2SeqTrainingArguments
 from transformers import AutoConfig
@@ -177,7 +177,7 @@ parser.add_argument(
 parser.add_argument("--clean", action="store_true", help="Remove output_dir before training if it exists")
 parser.add_argument("--total-epochs", type=int, default=DEFAULT_TOTAL_EPOCHS, help=f"Total number of training epochs (default: {DEFAULT_TOTAL_EPOCHS})")
 parser.add_argument("--model-checkpoint", type=str, default="t5-small", help="HuggingFace model checkpoint to use")
-parser.add_argument("--enable-fp16", action="store_true", help="Enable mixed precision (FP16) training (default: FP32/full precision)")
+parser.add_argument("--bf16", action="store_true", help="Enable mixed precision (BF16) training (default: FP32/full precision)")
 parser.add_argument("--warm-up-steps", type=int, default=DEFAULT_WARMUP_STEPS, help=f"Number of warm-up steps for learning rate scheduler (set 0 for no warm-up, default: {DEFAULT_WARMUP_STEPS})")
 parser.add_argument(
     "--learning-rate", type=float, default=DEFAULT_LEARNING_RATE,
@@ -250,14 +250,29 @@ def report_memory():
     rank_logger("info", f"🧠 Current memory usage: {mem:.2f} MB")
 
 def preprocess_t5(example):
+    # Extract raw text for inputs and targets
+    inputs = example[state.args_cli.input_col]
+    targets = example[state.args_cli.target_col]
+
+    # Ensure Python str types for tokenizer compatibility
+    if isinstance(inputs, (list, tuple)):
+        inputs = [str(x) for x in inputs]
+    else:
+        inputs = str(inputs)
+    if isinstance(targets, (list, tuple)):
+        targets = [str(x) for x in targets]
+    else:
+        targets = str(targets)
+
+    # Tokenize inputs and targets
     model_inputs = state.tokenizer(
-        example[state.args_cli.input_col],
+        inputs,
         truncation=True,
         padding="max_length",
         max_length=state.args_cli.max_input_length
     )
     labels = state.tokenizer(
-        example[state.args_cli.target_col],
+        targets,
         truncation=True,
         padding="max_length",
         max_length=state.args_cli.max_target_length
@@ -306,6 +321,9 @@ def main():
     elif state.args_cli.train_dataset_dir.endswith(".csv"):
         rank_logger("info", "📄 Detected CSV format for training dataset.")
         state.train_dataset = load_dataset("csv", data_files=state.args_cli.train_dataset_dir, split="train")
+        # Ensure CSV columns are Python str
+        state.train_dataset = state.train_dataset.cast_column(state.args_cli.input_col, Value("string"))
+        state.train_dataset = state.train_dataset.cast_column(state.args_cli.target_col, Value("string"))
     else:
         rank_logger("info", "📂 Loading HuggingFace dataset from disk...")
         state.train_dataset = Dataset.load_from_disk(state.args_cli.train_dataset_dir)
@@ -317,6 +335,9 @@ def main():
             rank_logger("info", "📄 Detected CSV format for validation dataset.")
             df = pd.read_csv(eval_path)
             state.validation_dataset = Dataset.from_pandas(df)
+            # Ensure CSV columns are Python str
+            state.validation_dataset = state.validation_dataset.cast_column(state.args_cli.input_col, Value("string"))
+            state.validation_dataset = state.validation_dataset.cast_column(state.args_cli.target_col, Value("string"))
         elif eval_path.suffix == ".json":
             import pandas as pd
             rank_logger("info", "📄 Detected JSON format for validation dataset.")
@@ -559,7 +580,7 @@ def main():
         metric_for_best_model="combined" if state.args_cli.calculate_meteor else "rougeL",
         greater_is_better=True,
         predict_with_generate=True,
-        fp16=state.args_cli.enable_fp16,
+        bf16=state.args_cli.bf16,
         learning_rate=state.args_cli.learning_rate,
         warmup_steps=state.args_cli.warm_up_steps,
         lr_scheduler_type=state.args_cli.lr_scheduler_type,
