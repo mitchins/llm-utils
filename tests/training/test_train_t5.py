@@ -5,6 +5,7 @@ import pytest
 
 pytest.importorskip("datasets")
 pytest.importorskip("transformers")
+from transformers.trainer_utils import TrainOutput
 from datasets import Dataset
 
 # Stub minimal torch modules so train_t5 can be imported without real torch
@@ -114,8 +115,11 @@ class DummyTrainer:
         self.data_collator = data_collator
         self.args = args
         self.trained = False
+        self.state = types.SimpleNamespace(best_model_checkpoint="dummy_checkpoint")
     def train(self):
         self.trained = True
+        # Return metrics with an "epoch" key for compatibility with run_training
+        return TrainOutput(global_step=0, training_loss=0.0, metrics={"epoch": self.args.num_train_epochs})
 
 
 def test_parse_args_defaults():
@@ -196,3 +200,101 @@ def test_log_length_histogram(monkeypatch):
     # Expect one bin line ending with ": 2" and one ending with ": 1"
     assert any(m.strip().endswith(": 2") for m in logs)
     assert any(m.strip().endswith(": 1") for m in logs)
+
+
+# Test versioned directory naming in save_model
+def test_versioned_save(tmp_path):
+    from llm_utils.training.train_t5 import RankZeroOnlySaveTrainer
+    import types, os
+
+    # Prepare a list to capture which dirs get passed to save_pretrained
+    saved_model_dirs = []
+    saved_tokenizer_dirs = []
+
+    base = tmp_path / "model"
+
+    class FakeTrainer(RankZeroOnlySaveTrainer):
+        def __init__(self):
+            # args with initial output_dir
+            self.args = types.SimpleNamespace(local_rank=-1, output_dir=str(base))
+            # Fake model.module or model with save_pretrained that records calls
+            def fake_state_dict():
+                return {}
+            def fake_save_pretrained(out, **kwargs):
+                saved_model_dirs.append(out)
+            dummy_module = types.SimpleNamespace(
+                state_dict=fake_state_dict,
+                save_pretrained=fake_save_pretrained
+            )
+            # Expose module so save_model picks it up if needed
+            self.model = types.SimpleNamespace(
+                module=dummy_module,
+                save_pretrained=fake_save_pretrained,
+                state_dict=fake_state_dict
+            )
+            # Fake tokenizer
+            self.tokenizer = types.SimpleNamespace(
+                save_pretrained=lambda out: saved_tokenizer_dirs.append(out)
+            )
+
+    trainer = FakeTrainer()
+
+    # First save → base dir
+    trainer.save_model()
+    # Second save → base-v1
+    trainer.save_model()
+
+    assert saved_model_dirs[0] == str(base)
+    assert saved_model_dirs[1] == f"{base}-v1"
+    # And tokenizer saved the same places
+    assert saved_tokenizer_dirs == saved_model_dirs
+def test_additional_special_tokens(monkeypatch):
+    # Simulate dataset and tokenizer with no special tokens by default
+    from llm_utils.training import train_t5
+    args = train_t5.parse_args([
+        "--task-name", "specialtok",
+        "--train-dataset-dir", "dummy.csv",
+        "--validation-size", "0",
+        "--additional-special-tokens", "<MASK>,<FOO>"
+    ])
+    # Patch tokenizer to track added special tokens
+    class TrackSpecialTok:
+        def __init__(self):
+            self.added = []
+            self.model_max_length = 42
+            self.pad_token_id = 0
+        @staticmethod
+        def from_pretrained(*a, **k):
+            return TrackSpecialTok()
+        def add_special_tokens(self, d):
+            toks = d.get("additional_special_tokens", [])
+            self.added.extend(toks)
+            return len(toks)
+        def __call__(self, text, truncation=False, padding=None, max_length=None):
+            return {"input_ids": [0], "attention_mask": [1], "labels": [0]}
+        def __len__(self):
+            # Simulate a vocab size, e.g., base 100 plus any added special tokens
+            return 100 + len(self.added)
+    import types as _types
+    import types
+    monkeypatch.setattr(train_t5, "AutoTokenizer", _types.SimpleNamespace(from_pretrained=TrackSpecialTok.from_pretrained))
+    monkeypatch.setattr(train_t5, "AutoModelForSeq2SeqLM", _types.SimpleNamespace(from_pretrained=lambda *a, **k: types.SimpleNamespace(config=types.SimpleNamespace(use_cache=False), resize_token_embeddings=lambda n: None, gradient_checkpointing_enable=lambda : None)))
+    monkeypatch.setattr(train_t5, "determine_batch_size", lambda *a, **k: 1)
+    # Patch dataset loading
+    from datasets import Dataset
+    monkeypatch.setattr(
+        train_t5,
+        "load_dataset",
+        lambda *args, **kwargs: Dataset.from_dict({
+            "input_ids": [[0]],
+            "attention_mask": [[1]],
+            "labels": [[0]]
+        })
+    )
+    # Stub out log_length_histogram before build_pipeline
+    monkeypatch.setattr(train_t5, "log_length_histogram", lambda *args, **kwargs: None)
+    # Build pipeline
+    state, model, collator, trainer = train_t5.build_pipeline(args, trainer_cls=lambda **kwargs: None)
+    # Check that the special tokens were registered
+    assert "<MASK>" in state.tokenizer.added
+    assert "<FOO>" in state.tokenizer.added

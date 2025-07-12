@@ -11,6 +11,21 @@ from sklearn.metrics import precision_recall_fscore_support
 
 def load_model_and_tokenizer(model_path):
     tokenizer = AutoTokenizer.from_pretrained(model_path)
+    # Debug: concise special token info
+    try:
+        core_tokens = {k: tokenizer.special_tokens_map[k] for k in ["pad_token", "eos_token", "unk_token"] if k in tokenizer.special_tokens_map}
+        print("Core special tokens:", core_tokens)
+        user_tokens = tokenizer.special_tokens_map.get("additional_special_tokens", [])
+        # Separate mask and extra_id tokens
+        extra_ids = [tok for tok in user_tokens if tok.startswith("<extra_id_")]
+        other_tokens = [tok for tok in user_tokens if not tok.startswith("<extra_id_")]
+        # Print non-extra_id tokens individually
+        if other_tokens:
+            print("User-added tokens:")
+            for tok in other_tokens:
+                print(f"  {tok}: {tokenizer.convert_tokens_to_ids(tok)}")
+    except Exception as e:
+        print(f"⚠️ Could not print special tokens info: {e}")
     model = AutoModelForSeq2SeqLM.from_pretrained(model_path).to("cuda" if torch.cuda.is_available() else "cpu")
     return model, tokenizer
 
@@ -108,7 +123,7 @@ def main():
         print("🧠 T5 REPL mode. Type input text to generate, Ctrl+C to exit.")
         while True:
             try:
-                text = multiline_input("📜 Paste scene")
+                text = multiline_input("📜 Enter or paste sample")
                 if not text:
                     continue
                 output = generate_single(text, model, tokenizer, args.max_new_tokens, args.num_beams, args.max_input_length)

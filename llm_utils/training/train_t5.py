@@ -11,6 +11,12 @@ import logging
 import os
 import psutil
 from transformers import EarlyStoppingCallback
+
+# Ensure transformers version is at least 4.50.0
+from packaging.version import parse as parse_version
+import transformers
+if parse_version(transformers.__version__) < parse_version("4.50.0"):
+    raise ImportError(f"transformers version 4.50.0 or newer is required, but found {transformers.__version__}")
 from .callbacks import EpochNormalizedLogger, MemoryUsageLogger
 from .utils import determine_batch_size
 from torch.utils.tensorboard import SummaryWriter
@@ -118,7 +124,7 @@ class PredictionShapeLoggerCallback(TrainerCallback):
             if hasattr(args, 'generation_max_length'):
                 rank_logger("info", f"Max generation length: {args.generation_max_length}")        
 
-# === Trainer subclass: only save on rank 0 ===
+# === Enhanced Trainer subclass with complete model saving ===
 class RankZeroOnlySaveTrainer(HFSeq2SeqTrainer):
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
         if self.args.predict_with_generate and not prediction_loss_only:
@@ -131,10 +137,108 @@ class RankZeroOnlySaveTrainer(HFSeq2SeqTrainer):
         return outputs
     
     def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = True):
+        """Enhanced save_model that ensures complete model saving."""
+        # Determine a unique output directory with version suffix if needed
+        if output_dir is None:
+            output_dir = self.args.output_dir
+        base_dir = output_dir
+        if os.path.exists(base_dir):
+            version = 1
+            # Increment suffix until an unused directory name is found
+            while os.path.exists(f"{base_dir}-v{version}"):
+                version += 1
+            output_dir = f"{base_dir}-v{version}"
+        # Now use `output_dir` for saving
         if getattr(self.args, "local_rank", -1) not in [-1, 0]:
             rank_logger("info", f"[rank{getattr(self.args, 'local_rank', -1)}] Skipping save_model.")
             return
-        super().save_model(output_dir, _internal_call)
+        # Ensure output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+        # Save the full model state dict explicitly
+        # Prefer module if it supports save_pretrained, else use self.model
+        if hasattr(self.model, 'module') and hasattr(self.model.module, 'save_pretrained'):
+            model_to_save = self.model.module
+        else:
+            model_to_save = self.model
+        # Save using the model's native save_pretrained method which is more reliable
+        try:
+            model_to_save.save_pretrained(
+                output_dir,
+                safe_serialization=True,  # Use safetensors format
+                save_function=torch.save,
+                state_dict=model_to_save.state_dict()  # Explicitly provide state dict
+            )
+            rank_logger("info", f"✅ Model saved to {output_dir}")
+        except Exception as e:
+            rank_logger("warning", f"⚠️ Failed to save with safe_serialization, trying without: {e}")
+            # Fallback to standard saving
+            model_to_save.save_pretrained(
+                output_dir,
+                safe_serialization=False,
+                save_function=torch.save,
+                state_dict=model_to_save.state_dict()
+            )
+            rank_logger("info", f"✅ Model saved to {output_dir} (fallback method)")
+        # Also save tokenizer if available
+        if hasattr(self, 'tokenizer') and self.tokenizer is not None:
+            self.tokenizer.save_pretrained(output_dir)
+        elif hasattr(state, 'tokenizer') and state.tokenizer is not None:
+            state.tokenizer.save_pretrained(output_dir)
+    
+    def _save_checkpoint(self, model, trial, metrics=None):
+        """Override checkpoint saving to ensure complete model saving."""
+        # Call the parent method first
+        checkpoint_folder = super()._save_checkpoint(model, trial)
+        
+        # If this is the best model so far, ensure it's saved completely
+        if checkpoint_folder and self.state.best_model_checkpoint == checkpoint_folder:
+            rank_logger("info", f"🏆 Saving best model checkpoint: {checkpoint_folder}")
+            # Force a complete save of the best model
+            self.save_model(checkpoint_folder, _internal_call=False)
+        
+        return checkpoint_folder
+    
+    def _load_best_model(self):
+        """Enhanced loading of best model with better error handling."""
+        if self.state.best_model_checkpoint is None:
+            rank_logger("warning", "⚠️ No best model checkpoint found, using current model")
+            return
+        
+        try:
+            rank_logger("info", f"🔄 Loading best model from: {self.state.best_model_checkpoint}")
+            
+            # Load model state dict directly
+            model_path = os.path.join(self.state.best_model_checkpoint, "pytorch_model.bin")
+            safetensors_path = os.path.join(self.state.best_model_checkpoint, "model.safetensors")
+            
+            # Try safetensors first, then pytorch_model.bin
+            if os.path.exists(safetensors_path):
+                from safetensors.torch import load_file
+                state_dict = load_file(safetensors_path)
+                rank_logger("info", "📦 Loaded from safetensors format")
+            elif os.path.exists(model_path):
+                state_dict = torch.load(model_path, map_location="cpu")
+                rank_logger("info", "📦 Loaded from pytorch_model.bin format")
+            else:
+                # Fallback to standard loading
+                rank_logger("info", "📦 Using standard model loading")
+                return super()._load_best_model()
+            
+            # Load state dict into model
+            model_to_load = self.model.module if hasattr(self.model, 'module') else self.model
+            missing_keys, unexpected_keys = model_to_load.load_state_dict(state_dict, strict=False)
+            
+            if missing_keys:
+                rank_logger("warning", f"⚠️ Missing keys when loading best model: {missing_keys}")
+            if unexpected_keys:
+                rank_logger("warning", f"⚠️ Unexpected keys when loading best model: {unexpected_keys}")
+            
+            rank_logger("info", "✅ Best model loaded successfully")
+            
+        except Exception as e:
+            rank_logger("error", f"❌ Failed to load best model: {e}")
+            rank_logger("info", "🔄 Falling back to standard loading method")
+            return super()._load_best_model()
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -161,6 +265,12 @@ parser = argparse.ArgumentParser(
     description="Generic seq2seq trainer for tasks like summarization, translation, paraphrasing"
 )
 parser.add_argument("--debug", action="store_true", help="Enable debug output")
+parser.add_argument(
+    "--additional-special-tokens",
+    type=str,
+    default=None,
+    help="Comma-separated list of special tokens (e.g. '<MASK>,<ANSWER>') to add to tokenizer"
+)
 parser.add_argument("--threads", type=int, default=1, help="Number of worker threads for dataset.map (default: 1)")
 parser.add_argument("--eval_steps", type=int, default=None, help="Force evaluation every N steps")
 parser.add_argument(
@@ -325,6 +435,15 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
         except Exception:
             state.tokenizer.vocab_size = None
 
+    # Register user-specified special tokens, if any
+    special_tokens_list = []
+    if getattr(state.args_cli, "additional_special_tokens", None):
+        special_tokens_list = [tok.strip() for tok in state.args_cli.additional_special_tokens.split(",") if tok.strip()]
+        if special_tokens_list:
+            special_tokens = {"additional_special_tokens": special_tokens_list}
+            added = state.tokenizer.add_special_tokens(special_tokens)
+            rank_logger("info", f"Added {added} special tokens: {special_tokens_list}")
+
     # If user did not specify max_input_length, default to model's max
     if state.args_cli.max_input_length is None:
         model_max = getattr(state.tokenizer, "model_max_length", None)
@@ -402,6 +521,10 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
     rank_logger("info", "🧠 Loading model...")
     # Prepare model
     model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+    # Resize model embeddings if special tokens were added
+    if special_tokens_list:
+        model.resize_token_embeddings(len(state.tokenizer))
+        rank_logger("info", f"Resized model embeddings to {len(state.tokenizer)} for special tokens.")
     rank_logger("info", "✅ Model loaded.")
     # Suppress warning about use_cache with gradient checkpointing
     model.config.use_cache = False
@@ -625,7 +748,33 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
 
 # === Training execution ===
 def run_training(trainer):
-    trainer.train()
+    # Execute training
+    result = trainer.train()
+    # Determine epochs run and early stopping
+    epochs_ran = result.metrics.get("epoch", None)
+    total_epochs = state.args_cli.total_epochs
+    stopped_early = epochs_ran is not None and epochs_ran < total_epochs
+    # Locate best checkpoint
+    best_ckpt = getattr(trainer.state, "best_model_checkpoint", None) or trainer.args.output_dir
+    # Summary log
+    summary = (
+        f"✅ Training complete: ran {epochs_ran:.2f} epochs"
+        + (" (stopped early)" if stopped_early else "")
+        + f". Best model saved at: {best_ckpt}"
+    )
+    rank_logger("info", summary)
+    # Save the best model (already loaded into memory) to the friendly output directory
+    try:
+        output_path = trainer.save_model(state.args_cli.output_dir)
+        # Ensure tokenizer is also saved
+        try:
+            state.tokenizer.save_pretrained(output_path or state.args_cli.output_dir)
+        except Exception as e:
+            rank_logger("warning", f"⚠️ Failed to save tokenizer: {e}")
+        rank_logger("info", f"✅ Best model and tokenizer saved to: {output_path or state.args_cli.output_dir}")
+    except Exception as e:
+        rank_logger("error", f"❌ Failed to save best model and tokenizer: {e}")
+    return result
 
 
 def main(argv=None):

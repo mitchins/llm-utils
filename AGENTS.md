@@ -45,7 +45,16 @@ Agents should run and expand existing tests under `tests/training/`, including:
 - Python 3.10+, `pip install -e .[training,test] evaluate numpy pytest`
 - Ensure `transformers`, `datasets`, and `evaluate` packages are installed at compatible versions.
 
+
 Agents should reference this file when onboarding new reviewers or automating test runs.
+
+
+## API Changes Beyond Model Cutoff
+
+Some Transformers API attributes and arguments have been renamed in newer versions. Notable changes include:
+
+- `TrainingArguments.evaluation_strategy` has been renamed to `eval_strategy`.
+- `Trainer.tokenizer` has been renamed to `processing_class` in Trainer initialization.
 
 ## Versioning
 - After making any significant changes to `train_t5.py`, update the project version to reflect the changes.
