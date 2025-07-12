@@ -195,3 +195,4 @@ cython_debug/
 .t5_repl_history
 *_model/
 **/events.out.tfevents.*
+**/.DS_Store
