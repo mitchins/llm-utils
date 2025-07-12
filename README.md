@@ -66,10 +66,12 @@ llm-request "Hello" --model my-model --base-url http://localhost:8000
 
 ## Running the tests
 
-The test suite uses **pytest**. Install the optional test dependencies and run:
+The test suite uses **pytest**. Install the training and test extras so
+heavy libraries like `datasets` are available:
 
 ```bash
-pip install -e .[test]
+pip install -e .[training,test]
+pip install evaluate
 pytest
 ```
 
