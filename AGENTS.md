@@ -40,8 +40,15 @@ Agents should run and expand existing tests under `tests/training/`, including:
 - For debugging, leverage `rank_logger` and set `--debug` for verbose logs.
 - When modifying padding or truncation behavior, check both real tokenizer outputs and dummy stubs to ensure consistency.
 
+
 ## Environment and Dependencies
 - Python 3.10+, `pip install -e .[training,test] evaluate numpy pytest`
 - Ensure `transformers`, `datasets`, and `evaluate` packages are installed at compatible versions.
 
 Agents should reference this file when onboarding new reviewers or automating test runs.
+
+## Versioning
+- After making any significant changes to `train_t5.py`, update the project version to reflect the changes.
+- Locate the version string in `setup.py` or `pyproject.toml` (e.g., `version="X.Y.Z"`).
+- Increment the patch number (e.g., from `1.2.3` to `1.2.4`) for bug fixes or minor improvements.
+- Commit the version bump as part of the same pull request.
