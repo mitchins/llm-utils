@@ -1,11 +1,12 @@
 import json
 import numpy as np
 import argparse
+import math
 from pathlib import Path
 from datasets import load_dataset, Dataset, Value
 import evaluate
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, Seq2SeqTrainingArguments
-from transformers import DataCollatorWithPadding
+from transformers import DataCollatorWithPadding, DataCollatorForSeq2Seq
 import logging
 import os
 import psutil
@@ -18,7 +19,22 @@ import torch.distributed as dist
 import time
 from transformers import Seq2SeqTrainer as HFSeq2SeqTrainer, TrainerCallback
 from typing import Optional
-import math
+def log_length_histogram(dataset, max_bins: int = 8):
+    """
+    Log a histogram of input sequence lengths in `dataset`.
+    """
+    # Gather lengths
+    lengths = [len(example["input_ids"]) for example in dataset]
+    if not lengths:
+        rank_logger("info", "Length histogram: dataset is empty.")
+        return
+    arr = np.array(lengths)
+    # Determine number of bins, up to max_bins but no more than unique lengths
+    num_bins = min(max_bins, len(np.unique(arr)))
+    counts, edges = np.histogram(arr, bins=num_bins)
+    rank_logger("info", f"🔢 Input length histogram ({num_bins} bins):")
+    for count, left, right in zip(counts, edges[:-1], edges[1:]):
+        rank_logger("info", f"  {int(left):4d}-{int(right):4d}: {count}")
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -32,13 +48,18 @@ def get_world_size_safe():
 
 # Helper function to tokenize datasets
 def tokenize_dataset(dataset, preprocess_fn, args, desc):
-    return dataset.map(
+    # First apply preprocessing to add token fields
+    tokenized = dataset.map(
         preprocess_fn,
         batched=True,
         num_proc=args.threads,
-        remove_columns=[args.input_col, args.target_col],
         desc=desc,
     )
+    # Then drop original text columns if they exist
+    remove_cols = [c for c in (args.input_col, args.target_col) if c in tokenized.column_names]
+    if remove_cols:
+        tokenized = tokenized.remove_columns(remove_cols)
+    return tokenized
 
 def rank_logger(level, message):
     if dist.is_available() and dist.is_initialized():
@@ -58,6 +79,9 @@ DEFAULT_VALIDATION_SIZE = 0.10
 DEFAULT_EARLY_STOPPING_PATIENCE = 15
 DEFAULT_MAX_INPUT_LENGTH = 512
 DEFAULT_MAX_TARGET_LENGTH = 128
+
+# Warning threshold for long-context models
+MAX_SAFE_CONTEXT_LENGTH = 2048
 
 # === Training state ===
 class TrainingState:
@@ -209,8 +233,8 @@ parser.add_argument(
     help="Name of the target text field"
 )
 parser.add_argument(
-    "--max-input-length", type=int, default=DEFAULT_MAX_INPUT_LENGTH,
-    help=f"Maximum input sequence length (default: {DEFAULT_MAX_INPUT_LENGTH})"
+    "--max-input-length", type=int, default=None,
+    help="Maximum input sequence length (defaults to the model's native max length)"
 )
 parser.add_argument(
     "--max-target-length", type=int, default=DEFAULT_MAX_TARGET_LENGTH,
@@ -255,13 +279,11 @@ def preprocess_t5(example):
     model_inputs = state.tokenizer(
         inputs,
         truncation=True,
-        padding="max_length",
         max_length=state.args_cli.max_input_length
     )
     labels = state.tokenizer(
         targets,
         truncation=True,
-        padding="max_length",
         max_length=state.args_cli.max_target_length
     )
     model_inputs["labels"] = labels["input_ids"]
@@ -294,6 +316,20 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
     rank_logger("info", "🔤 Loading tokenizer...")
     state.tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, use_fast=True)
     rank_logger("info", "✅ Tokenizer loaded.")
+    # Ensure tokenizer has required attributes
+    if not hasattr(state.tokenizer, "pad_token_id"):
+        state.tokenizer.pad_token_id = getattr(state.tokenizer, "eos_token_id", 0)
+    if not hasattr(state.tokenizer, "vocab_size"):
+        try:
+            state.tokenizer.vocab_size = len(state.tokenizer.get_vocab())
+        except Exception:
+            state.tokenizer.vocab_size = None
+
+    # If user did not specify max_input_length, default to model's max
+    if state.args_cli.max_input_length is None:
+        model_max = getattr(state.tokenizer, "model_max_length", None)
+        state.args_cli.max_input_length = model_max or DEFAULT_MAX_INPUT_LENGTH
+        rank_logger("info", f"🔢 max_input_length not set, using model max of {state.args_cli.max_input_length}")
 
     # Only load from disk (HuggingFace datasets), or from CSV/JSON if specified
     # Load train dataset: handle .jsonl, .csv, or dataset dir
@@ -306,6 +342,7 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
         # Ensure CSV columns are Python str
         state.train_dataset = state.train_dataset.cast_column(state.args_cli.input_col, Value("string"))
         state.train_dataset = state.train_dataset.cast_column(state.args_cli.target_col, Value("string"))
+        rank_logger("info", f"🔑 Available columns in CSV: {state.train_dataset.column_names}")
     else:
         rank_logger("info", "📂 Loading HuggingFace dataset from disk...")
         state.train_dataset = Dataset.load_from_disk(state.args_cli.train_dataset_dir)
@@ -320,6 +357,7 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
             # Ensure CSV columns are Python str
             state.validation_dataset = state.validation_dataset.cast_column(state.args_cli.input_col, Value("string"))
             state.validation_dataset = state.validation_dataset.cast_column(state.args_cli.target_col, Value("string"))
+            rank_logger("info", f"🔑 Available columns in validation CSV: {state.validation_dataset.column_names}")
         elif eval_path.suffix == ".json":
             import pandas as pd
             rank_logger("info", "📄 Detected JSON format for validation dataset.")
@@ -336,23 +374,29 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
         state.train_dataset = split["train"]
         state.test_dataset = split["test"]
 
-    # Check if dataset is already tokenized
-    state.is_tokenized = all(
-        col in state.train_dataset.column_names for col in ["input_ids", "attention_mask"]
-    )
-    # Sanity check: no empty input or output rows
-    if not state.is_tokenized:
-        num_empty_input = sum([str(x).strip() == "" for x in state.train_dataset[state.args_cli.input_col]])
-        num_empty_output = sum([str(x).strip() == "" for x in state.train_dataset[state.args_cli.target_col]])
-        if num_empty_input > 0:
-            raise ValueError(f"❌ Found {num_empty_input} empty input rows in '{state.args_cli.input_col}' — these must be removed or filled.")
-        if num_empty_output > 0 and not state.args_cli.allow_empty_output:
-            raise ValueError(f"❌ Found {num_empty_output} empty output rows in '{state.args_cli.target_col}'. Use --allow-empty-output to bypass.")
+    def looks_tokenized(dataset):
+        # Check first example for list of ints
+        try:
+            sample = dataset[0]["input_ids"]
+            return isinstance(sample, list) and sample and isinstance(sample[0], int)
+        except Exception:
+            return False
+
+    # === TOKENIZATION PHASE: Check & preprocess raw text ===
+    if looks_tokenized(state.train_dataset):
+        rank_logger("info", "⚡ Dataset looks pre-tokenized — skipping preprocessing.")
     else:
-        rank_logger("info", "⚡ Dataset is pre-tokenized — skipping empty input/output validation.")
+        rank_logger("info", "🔄 Tokenizing dataset...")
+        state.train_dataset = tokenize_dataset(state.train_dataset, preprocess_t5, state.args_cli, "🧠 Tokenizing train set")
+        state.test_dataset = tokenize_dataset(state.test_dataset, preprocess_t5, state.args_cli, "🧠 Tokenizing test set")
+        if state.args_cli.eval_dataset_dir:
+            state.validation_dataset = tokenize_dataset(state.validation_dataset, preprocess_t5, state.args_cli, "🧠 Tokenizing validation set")
+        # --- End of tokenization: mark dataset as processed to avoid re-tokenizing downstream ---
+        state.is_tokenized = True
+    # === END TOKENIZATION PHASE ===
 
     # Warn if user requests a long context but model is not a known long-context model
-    if state.args_cli.max_input_length > 2048 and not any(s in model_checkpoint.lower() for s in ["longt5", "long-t5", "tglobal"]):
+    if state.args_cli.max_input_length > MAX_SAFE_CONTEXT_LENGTH and not any(s in model_checkpoint.lower() for s in ["longt5", "long-t5", "tglobal"]):
         rank_logger("warning", f"⚠️ Specified max_input_length={state.args_cli.max_input_length} but model '{model_checkpoint}' may not support long contexts. Proceed with caution.")
 
     rank_logger("info", "🧠 Loading model...")
@@ -460,18 +504,11 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
             metrics["eval_combined"] = 0.5 * metrics["eval_rougeL"] + 0.5 * metrics["eval_meteor"]
         return metrics
 
-    rank_logger("info", "🪄 Starting dataset tokenization...")
-    report_memory()
-    if not state.is_tokenized:
-        rank_logger("info", "🔄 Dataset not yet tokenized — applying preprocessing...")
-        state.train_dataset = tokenize_dataset(state.train_dataset, preprocess_t5, state.args_cli, "🧠 Tokenizing train set")
-        state.test_dataset = tokenize_dataset(state.test_dataset, preprocess_t5, state.args_cli, "🧠 Tokenizing test set")
-        if state.args_cli.eval_dataset_dir:
-            state.validation_dataset = tokenize_dataset(state.validation_dataset, preprocess_t5, state.args_cli, "🧠 Tokenizing validation set")
-    else:
-        rank_logger("info", "⚡ Detected pre-tokenized dataset — skipping tokenization.")
-    report_memory()
 
+
+    # Log input-length distribution before filtering out too-long examples
+    rank_logger("info", "🔢 Pre-filter input-length distribution:")
+    log_length_histogram(state.train_dataset)
     state.train_dataset = state.train_dataset.filter(lambda x: len(x["input_ids"]) <= state.args_cli.max_input_length)
     if state.args_cli.eval_dataset_dir:
         state.validation_dataset = state.validation_dataset.filter(lambda x: len(x["input_ids"]) <= state.args_cli.max_input_length)
@@ -497,7 +534,7 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
         base_batch_size = determine_batch_size(state.args_cli.model_checkpoint, False)
     rank_logger("info", f"📦 Auto-scaled batch size: using batch size {base_batch_size}")
 
-    effective_batch_size = state.args_cli.batch_size * state.args_cli.gradient_accumulation_steps * get_world_size_safe()
+    effective_batch_size = base_batch_size * state.args_cli.gradient_accumulation_steps * get_world_size_safe()
     if state.args_cli.eval_strategy == "epoch":
         eval_strategy = "epoch"
         save_strategy = "epoch"
@@ -552,10 +589,18 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
 
     writer = SummaryWriter(log_dir=str(training_args.logging_dir))
 
+    # Log input-length distribution
+    log_length_histogram(state.train_dataset)
     rank_logger("info", "🏋️ Beginning training loop...")
     model.gradient_checkpointing_enable()
 
-    collator = DataCollatorWithPadding(tokenizer=state.tokenizer, padding="max_length", max_length=state.args_cli.max_input_length)
+    # Use seq2seq-aware collator to pad inputs and labels uniformly
+    collator = DataCollatorForSeq2Seq(
+        tokenizer=state.tokenizer,
+        model=model,
+        label_pad_token_id=state.tokenizer.pad_token_id,
+        padding="longest"
+    )
 
     trainer = trainer_cls(
         model=model,
