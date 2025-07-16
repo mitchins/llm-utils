@@ -25,7 +25,10 @@ training = [
     "pynvml",
     "urllib3",
     "safetensors",
-    "tensorboard"
+    "tensorboard",
+    "evaluate",
+    "psutil",
+    "accelerate"
 ]
 test = [
     "pytest",
