@@ -17,7 +17,7 @@ class BaseLLMClient(ABC):
         self.system_prompt = system_prompt or "You are a helpful assistant."
 
     @abstractmethod
-    def generate(self, prompt, system="", temperature=0.0) -> str:
+    def generate(self, prompt, system="", temperature=0.0, images=None) -> str:
         """
         Generate a response from the language model.
 
@@ -25,6 +25,8 @@ class BaseLLMClient(ABC):
             prompt (str): The prompt text.
             system (str, optional): System message or instruction. Defaults to "".
             temperature (float, optional): Sampling temperature. Defaults to 0.0.
+            images (list[str] | None, optional): Base64 encoded images to send
+                with the prompt. Defaults to None.
 
         Returns:
             str: The generated response.

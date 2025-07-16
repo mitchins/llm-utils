@@ -90,6 +90,35 @@ class TestLLMClient:
         assert captured["body"]["messages"][1]["content"] == prompt_text
         assert captured["body"]["model"] == "qwen:14b"
 
+    def test_chat_completion_with_images(self, monkeypatch):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            captured["body"] = body
+            return httpx.Response(
+                status_code=200,
+                json={"choices": [{"message": {"content": "Mocked response"}}]}
+            )
+
+        transport = httpx.MockTransport(handler)
+
+        client = OpenAILikeLLMClient(client=httpx.Client(transport=transport))
+
+        prompt_text = "What is in these images?"
+        images = ["aW1hZ2Ux", "aW1hZ2Uy"]
+        result = client.chat(prompt_text, images=images)
+
+        assert result == "Mocked response"
+
+        # Verify the payload contains the images in order
+        content = captured["body"]["messages"][1]["content"]
+        assert content[0]["type"] == "text"
+        assert content[0]["text"] == prompt_text
+        assert content[1]["type"] == "image_url"
+        assert content[1]["image_url"]["url"] == "data:image/png;base64," + images[0]
+        assert content[2]["image_url"]["url"] == "data:image/png;base64," + images[1]
+
 
     def test_chat_completion_timeout(self, monkeypatch):
         def timeout_handler(request: httpx.Request) -> httpx.Response:
