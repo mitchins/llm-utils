@@ -81,3 +81,19 @@ def determine_batch_size(model_checkpoint: str, no_batching: bool, total_vram_gb
         # do not exceed base_batch for large hidden sizes
         batch_size = min(batch_size, base_batch)
     return max(1, batch_size)
+
+
+def calculate_dynamic_eval_steps(
+    train_dataset_size: int,
+    batch_size: int,
+    preferred_fraction: float = 1 / 3,
+    max_steps: int = 10000,
+) -> int:
+    """Return evaluation interval based on dataset size and batch size.
+
+    This helper is shared by multiple training scripts to keep evaluation
+    frequency consistent across models.
+    """
+    steps_per_epoch = train_dataset_size // batch_size
+    proposed_steps = int(steps_per_epoch * preferred_fraction)
+    return min(steps_per_epoch, max(proposed_steps, 1), max_steps)
