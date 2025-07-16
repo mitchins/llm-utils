@@ -6,7 +6,7 @@ import atexit
 import torch
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-from datasets import load_dataset, Dataset
+from llm_utils.data.dataset_loading import load_dataset_auto
 from sklearn.metrics import precision_recall_fscore_support
 
 def load_model_and_tokenizer(model_path):
@@ -37,7 +37,7 @@ def generate_single(text, model, tokenizer, max_new_tokens=64, num_beams=1, max_
     return tokenizer.decode(output_ids[0], skip_special_tokens=True)
 
 def evaluate_bulk(dataset_path, model, tokenizer, text_field="input", target_field="output", max_new_tokens=64, num_beams=1, show_detail=False, max_input_length=4096):
-    ds = load_dataset("json", data_files=dataset_path)["train"]
+    ds = load_dataset_auto(dataset_path)
 
     predictions = []
     references = []

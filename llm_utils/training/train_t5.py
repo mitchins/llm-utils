@@ -18,6 +18,7 @@ import transformers
 if parse_version(transformers.__version__) < parse_version("4.50.0"):
     raise ImportError(f"transformers version 4.50.0 or newer is required, but found {transformers.__version__}")
 from .callbacks import EpochNormalizedLogger, MemoryUsageLogger
+from llm_utils.data.dataset_loading import load_dataset_auto
 from .utils import determine_batch_size
 from torch.utils.tensorboard import SummaryWriter
 import torch
@@ -450,48 +451,29 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
         state.args_cli.max_input_length = model_max or DEFAULT_MAX_INPUT_LENGTH
         rank_logger("info", f"🔢 max_input_length not set, using model max of {state.args_cli.max_input_length}")
 
-    # Only load from disk (HuggingFace datasets), or from CSV/JSON if specified
-    # Load train dataset: handle .jsonl, .csv, or dataset dir
-    if state.args_cli.train_dataset_dir.endswith(".jsonl"):
-        rank_logger("info", "📄 Detected JSONL format for training dataset.")
-        state.train_dataset = load_dataset("json", data_files=state.args_cli.train_dataset_dir, split="train")
-    elif state.args_cli.train_dataset_dir.endswith(".csv"):
-        rank_logger("info", "📄 Detected CSV format for training dataset.")
-        state.train_dataset = load_dataset("csv", data_files=state.args_cli.train_dataset_dir, split="train")
-        # Ensure CSV columns are Python str
+    state.train_dataset = load_dataset_auto(state.args_cli.train_dataset_dir)
+    if state.args_cli.train_dataset_dir.endswith(".csv"):
         state.train_dataset = state.train_dataset.cast_column(state.args_cli.input_col, Value("string"))
         state.train_dataset = state.train_dataset.cast_column(state.args_cli.target_col, Value("string"))
         rank_logger("info", f"🔑 Available columns in CSV: {state.train_dataset.column_names}")
-    else:
-        rank_logger("info", "📂 Loading HuggingFace dataset from disk...")
-        state.train_dataset = Dataset.load_from_disk(state.args_cli.train_dataset_dir)
 
     if state.args_cli.eval_dataset_dir:
-        eval_path = Path(state.args_cli.eval_dataset_dir)
-        if eval_path.suffix == ".csv":
-            import pandas as pd
-            rank_logger("info", "📄 Detected CSV format for validation dataset.")
-            df = pd.read_csv(eval_path)
-            state.validation_dataset = Dataset.from_pandas(df)
-            # Ensure CSV columns are Python str
+        state.validation_dataset = load_dataset_auto(state.args_cli.eval_dataset_dir)
+        if state.args_cli.eval_dataset_dir.endswith(".csv"):
             state.validation_dataset = state.validation_dataset.cast_column(state.args_cli.input_col, Value("string"))
             state.validation_dataset = state.validation_dataset.cast_column(state.args_cli.target_col, Value("string"))
             rank_logger("info", f"🔑 Available columns in validation CSV: {state.validation_dataset.column_names}")
-        elif eval_path.suffix == ".json":
-            import pandas as pd
-            rank_logger("info", "📄 Detected JSON format for validation dataset.")
-            df = pd.read_json(eval_path)
-            state.validation_dataset = Dataset.from_pandas(df)
-        else:
-            state.validation_dataset = Dataset.load_from_disk(state.args_cli.eval_dataset_dir)
         rank_logger("info", f"✅ Loaded train ({len(state.train_dataset)}), validation ({len(state.validation_dataset)}) from disk or file.")
     else:
         total_examples = len(state.train_dataset)
         eval_size = int(total_examples * state.args_cli.validation_size)
-        rank_logger("info", f"📊 Splitting train into train/test: total {total_examples}, test size {eval_size} ({(eval_size/total_examples)*100:.2f}%)")
-        split = state.train_dataset.train_test_split(test_size=eval_size/total_examples, seed=42)
-        state.train_dataset = split["train"]
-        state.test_dataset = split["test"]
+        if eval_size > 0:
+            rank_logger("info", f"📊 Splitting train into train/test: total {total_examples}, test size {eval_size} ({(eval_size/total_examples)*100:.2f}%)")
+            split = state.train_dataset.train_test_split(test_size=eval_size/total_examples, seed=42)
+            state.train_dataset = split["train"]
+            state.test_dataset = split["test"]
+        else:
+            state.test_dataset = state.train_dataset
 
     def looks_tokenized(dataset):
         # Check first example for list of ints
