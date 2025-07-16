@@ -3,6 +3,8 @@ import httpx
 import json
 import pytest
 import os
+
+IMG_B64 = "AAA="
 from llm_utils.interfacing.llm_request import OpenAILikeLLMClient
 from llm_utils.interfacing.llm_request import (
     LLMTimeoutError,
@@ -89,6 +91,29 @@ class TestLLMClient:
         assert captured["body"]["messages"][1]["role"] == "user"
         assert captured["body"]["messages"][1]["content"] == prompt_text
         assert captured["body"]["model"] == "qwen:14b"
+
+    def test_chat_completion_with_images(self, monkeypatch):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            captured["body"] = body
+            return httpx.Response(
+                status_code=200,
+                json={"choices": [{"message": {"content": "Image response"}}]}
+            )
+
+        transport = httpx.MockTransport(handler)
+
+        client = OpenAILikeLLMClient(client=httpx.Client(transport=transport))
+
+        result = client.chat("Look", images=[IMG_B64])
+
+        assert result == "Image response"
+        user_content = captured["body"]["messages"][1]["content"]
+        assert isinstance(user_content, list)
+        assert user_content[0]["text"] == "Look"
+        assert user_content[1]["image_url"]["url"].endswith(IMG_B64)
 
 
     def test_chat_completion_timeout(self, monkeypatch):

@@ -3,6 +3,8 @@ import pytest
 from llm_utils.interfacing.mock_client import MockLLMClient
 from llm_utils.interfacing.base_client import LLMError
 
+IMG_B64 = "AAA="
+
 
 def test_generate_from_list():
     responses = [
@@ -15,7 +17,7 @@ def test_generate_from_list():
         }
     ]
     client = MockLLMClient(responses, model_name="m1")
-    assert client.generate("hi", system="sys", temperature=0.0) == "hello"
+    assert client.generate("hi", system="sys", temperature=0.0, images=[IMG_B64]) == "hello"
 
 
 def test_generate_from_file(tmp_path):
