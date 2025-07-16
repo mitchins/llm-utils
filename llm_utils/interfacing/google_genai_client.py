@@ -30,7 +30,7 @@ class GoogleLLMClient(BaseLLMClient):
         self.timeout = timeout
         self.max_output_tokens = max_output_tokens
 
-    def generate(self, prompt, system="", temperature=0.0) -> str:
+    def generate(self, prompt, system="", temperature=0.0, images=None) -> str:
         if not prompt or len(prompt) == 0:
             raise ValueError("Prompt must not be empty for GoogleLLMClient.")
         if not self.model:
@@ -54,8 +54,15 @@ class GoogleLLMClient(BaseLLMClient):
                 HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
             }
 
+            contents = [prompt]
+            if images:
+                for img in images:
+                    contents.append({
+                        "inline_data": {"mime_type": "image/png", "data": img}
+                    })
+
             response = model_instance.generate_content(
-                contents=prompt,
+                contents=contents,
                 generation_config=generation_config,
                 safety_settings=safety_settings,
             )

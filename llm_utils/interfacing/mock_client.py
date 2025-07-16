@@ -52,9 +52,9 @@ class MockLLMClient(BaseLLMClient):
     def _make_key(model: str, system: str, prompt: str, temperature: float) -> Tuple[str, str, str, float]:
         return model, system, prompt, temperature
 
-    def generate(self, prompt: str, system: str = "", temperature: float = 0.0) -> str:
+    def generate(self, prompt: str, system: str = "", temperature: float = 0.0, images=None) -> str:
         if self._on_request:
-            override = self._on_request(prompt=prompt, system=system, temperature=temperature)
+            override = self._on_request(prompt=prompt, system=system, temperature=temperature, images=images)
             if override is not None:
                 return override
         key = self._make_key(self.model, system, prompt, temperature)
@@ -62,8 +62,8 @@ class MockLLMClient(BaseLLMClient):
             raise LLMError(f"No mock response for request: {key}")
         return self._responses[key]
 
-    def prompt(self, prompt: str, system: str = "", temperature: float = 0.0) -> str:
+    def prompt(self, prompt: str, system: str = "", temperature: float = 0.0, images=None) -> str:
         """
         Alias for generate, plus supports callback override.
         """
-        return self.generate(prompt, system=system, temperature=temperature)
+        return self.generate(prompt, system=system, temperature=temperature, images=images)

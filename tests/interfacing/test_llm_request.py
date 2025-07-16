@@ -169,3 +169,21 @@ class TestLLMClient:
         with pytest.raises(LLMUnexpectedResponseError) as exc_info:
             client.chat("Trigger internal server error")
         assert "Internal Server Error" in str(exc_info.value)
+
+    def test_chat_with_images(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+        transport = httpx.MockTransport(handler)
+        client = OpenAILikeLLMClient(client=httpx.Client(transport=transport))
+
+        imgs = ["imgdata1", "imgdata2"]
+        client.chat("Look", images=imgs)
+
+        content = captured["body"]["messages"][1]["content"]
+        assert isinstance(content, list)
+        assert content[0]["text"] == "Look"
+        assert content[1]["image_url"]["url"].endswith(imgs[0])

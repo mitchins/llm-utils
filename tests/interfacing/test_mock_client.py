@@ -32,3 +32,12 @@ def test_unmatched_request_raises():
     client = MockLLMClient([], model_name="none")
     with pytest.raises(LLMError):
         client.generate("something")
+
+
+def test_generate_with_images_ignored():
+    responses = [
+        {"model": "m3", "system": "", "prompt": "image", "temperature": 0.0, "response": "ok"}
+    ]
+    client = MockLLMClient(responses, model_name="m3")
+    result = client.generate("image", images=["abcd"], system="", temperature=0.0)
+    assert result == "ok"
