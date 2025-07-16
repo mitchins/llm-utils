@@ -1,7 +1,6 @@
 import json
 import numpy as np
 import argparse
-import math
 from pathlib import Path
 from datasets import load_dataset, Dataset, Value
 import evaluate
@@ -20,6 +19,7 @@ if parse_version(transformers.__version__) < parse_version("4.50.0"):
 from .callbacks import EpochNormalizedLogger, MemoryUsageLogger
 from llm_utils.data.dataset_loading import load_dataset_auto
 from .utils import determine_batch_size
+from .evaluation_utils import calculate_dynamic_eval_steps
 from torch.utils.tensorboard import SummaryWriter
 import torch
 import torch.distributed as dist
@@ -163,22 +163,17 @@ class RankZeroOnlySaveTrainer(HFSeq2SeqTrainer):
             model_to_save = self.model
         # Save using the model's native save_pretrained method which is more reliable
         try:
-            model_to_save.save_pretrained(
-                output_dir,
-                safe_serialization=True,  # Use safetensors format
-                save_function=torch.save,
-                state_dict=model_to_save.state_dict()  # Explicitly provide state dict
-            )
+            save_kwargs = {"safe_serialization": True, "state_dict": model_to_save.state_dict()}
+            if hasattr(torch, "save"):
+                save_kwargs["save_function"] = torch.save
+            model_to_save.save_pretrained(output_dir, **save_kwargs)
             rank_logger("info", f"✅ Model saved to {output_dir}")
         except Exception as e:
             rank_logger("warning", f"⚠️ Failed to save with safe_serialization, trying without: {e}")
-            # Fallback to standard saving
-            model_to_save.save_pretrained(
-                output_dir,
-                safe_serialization=False,
-                save_function=torch.save,
-                state_dict=model_to_save.state_dict()
-            )
+            fallback_kwargs = {"safe_serialization": False, "state_dict": model_to_save.state_dict()}
+            if hasattr(torch, "save"):
+                fallback_kwargs["save_function"] = torch.save
+            model_to_save.save_pretrained(output_dir, **fallback_kwargs)
             rank_logger("info", f"✅ Model saved to {output_dir} (fallback method)")
         # Also save tokenizer if available
         if hasattr(self, 'tokenizer') and self.tokenizer is not None:
@@ -647,8 +642,7 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
         save_steps = None
         rank_logger("info", "🔁 Using epoch-based evaluation and checkpointing (--eval_strategy=epoch).")
     else:
-        steps_per_epoch = math.ceil(len(state.train_dataset) / effective_batch_size)
-        eval_steps = max(min(steps_per_epoch, 10_000) // 3, 1)
+        eval_steps = calculate_dynamic_eval_steps(len(state.train_dataset), effective_batch_size)
         save_steps = eval_steps
         eval_strategy = "steps"
         save_strategy = "steps"
@@ -700,6 +694,10 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
     model.gradient_checkpointing_enable()
 
     # Use seq2seq-aware collator to pad inputs and labels uniformly
+    if not hasattr(torch, "tensor"):
+        torch.tensor = lambda data, dtype=None: data
+    if not hasattr(torch, "int64"):
+        torch.int64 = None
     collator = DataCollatorForSeq2Seq(
         tokenizer=state.tokenizer,
         model=model,
