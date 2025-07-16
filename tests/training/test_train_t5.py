@@ -94,6 +94,8 @@ def stub_hf(monkeypatch):
     monkeypatch.setattr(train_t5, "AutoTokenizer", _types.SimpleNamespace(from_pretrained=DummyTok.from_pretrained))
     monkeypatch.setattr(train_t5, "AutoModelForSeq2SeqLM", _types.SimpleNamespace(from_pretrained=fake_model_pretrained))
     monkeypatch.setattr(train_t5.evaluate, "load", lambda *a, **k: types.SimpleNamespace(compute=lambda **kw: {}))
+    monkeypatch.setattr(train_t5, "determine_batch_size", lambda *a, **k: 1)
+    monkeypatch.setattr(train_t5, "Seq2SeqTrainingArguments", lambda **kw: types.SimpleNamespace(**kw))
     # Simplify dataset splitting
     monkeypatch.setattr(Dataset, "train_test_split", lambda self, *a, **k: {"train": self, "test": self})
     monkeypatch.setattr(Dataset, "cast_column", lambda self, *a, **k: self)
@@ -101,7 +103,9 @@ def stub_hf(monkeypatch):
 def stub_dataset(monkeypatch, data):
     from llm_utils.training import train_t5
     from datasets import Dataset
-    monkeypatch.setattr(train_t5, "load_dataset", lambda *args, **kwargs: Dataset.from_dict(data))
+    monkeypatch.setattr(train_t5, "load_dataset_auto", lambda *a, **k: Dataset.from_dict(data))
+    import llm_utils.data.dataset_loading as dl
+    monkeypatch.setattr(dl, "load_dataset_auto", lambda *a, **k: Dataset.from_dict(data))
 # Ensure package is importable
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, ROOT)
@@ -284,7 +288,7 @@ def test_additional_special_tokens(monkeypatch):
     from datasets import Dataset
     monkeypatch.setattr(
         train_t5,
-        "load_dataset",
+        "load_dataset_auto",
         lambda *args, **kwargs: Dataset.from_dict({
             "input_ids": [[0]],
             "attention_mask": [[1]],

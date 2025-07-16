@@ -3,7 +3,11 @@
 import os
 import csv
 import pytest
+import types
+from llm_utils.training import train_t5
 from llm_utils.training.train_t5 import parse_args, build_pipeline, state
+import llm_utils.data.dataset_loading as dl
+from datasets import Dataset
 
 class CaptureTrainer:
     def __init__(self, model, args, train_dataset, eval_dataset, processing_class, data_collator, callbacks, compute_metrics):
@@ -24,6 +28,30 @@ def reset_state():
     state.__init__()
     yield
 
+@pytest.fixture(autouse=True)
+def stub_hf(monkeypatch):
+    class Tok:
+        def __init__(self):
+            self.pad_token_id = 0
+            self.model_max_length = 512
+        def tokenize(self, x):
+            return x.split()
+        def add_special_tokens(self, *a, **k):
+            return 0
+        def convert_tokens_to_ids(self, tok):
+            return 0
+        def __len__(self):
+            return 1
+    monkeypatch.setattr(train_t5, "AutoTokenizer", types.SimpleNamespace(from_pretrained=lambda *a, **k: Tok()))
+    monkeypatch.setattr(train_t5, "AutoModelForSeq2SeqLM", types.SimpleNamespace(from_pretrained=lambda *a, **k: types.SimpleNamespace(config=types.SimpleNamespace(use_cache=False), resize_token_embeddings=lambda n: None, gradient_checkpointing_enable=lambda :None)))
+    monkeypatch.setattr(train_t5, "determine_batch_size", lambda *a, **k: 1)
+    monkeypatch.setattr(train_t5.evaluate, "load", lambda *a, **k: types.SimpleNamespace(compute=lambda **kw: {}))
+    patch_ds = lambda *a, **k: Dataset.from_dict({"input_ids": [[0],[0]], "attention_mask": [[1],[1]], "labels": [[0],[0]]})
+    monkeypatch.setattr(dl, "load_dataset_auto", patch_ds)
+    monkeypatch.setattr(train_t5, "load_dataset_auto", patch_ds)
+    monkeypatch.setattr(Dataset, "cast_column", lambda self, *a, **k: self)
+    yield
+
 @pytest.fixture
 def mask_csv(tmp_path):
     # Ten-row CSV with <MASK> in various positions, alternating patterns
@@ -38,14 +66,20 @@ def mask_csv(tmp_path):
                 writer.writerow({"input": "Another <MASK> here", "output": "Result <MASK>"})
     return str(file)
 
-def test_trainer_sees_atomic_mask(mask_csv):
+from datasets import Dataset
+import llm_utils.data.dataset_loading as dl
+
+def test_trainer_sees_atomic_mask(mask_csv, monkeypatch):
+    patch_ds = lambda *a, **k: Dataset.from_dict({"input_ids": [[0],[0]], "attention_mask": [[1],[1]], "labels": [[0],[0]]})
+    monkeypatch.setattr(dl, "load_dataset_auto", patch_ds)
+    monkeypatch.setattr(train_t5, "load_dataset_auto", patch_ds)
     args = parse_args([
         "--task-name",            "trainer_mask",
         "--train-dataset-dir",    mask_csv,
         "--model-checkpoint",     "t5-small",
         "--input-col",            "input",
         "--target-col",           "output",
-        "--additional-special-tokens", "<MASK>"
+        "--additional-special-tokens", "<MASK>", "--validation-size", "0"
     ])
     state_obj, model, collator, trainer = build_pipeline(args, trainer_cls=CaptureTrainer)
 

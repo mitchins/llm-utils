@@ -1,6 +1,6 @@
 [project]
 name = "llm-utils"
-version = "0.8.4"
+version = "0.8.5"
 description = "Lightweight utilities for LLM data parsing and training"
 authors = [
     { name="Mitchell Currie" }
@@ -25,7 +25,10 @@ training = [
     "pynvml",
     "urllib3",
     "safetensors",
-    "tensorboard"
+    "tensorboard",
+    "evaluate",
+    "psutil",
+    "accelerate"
 ]
 test = [
     "pytest",

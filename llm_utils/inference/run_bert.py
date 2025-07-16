@@ -7,7 +7,7 @@ import numpy as np
 from transformers import BertForSequenceClassification
 from transformers import AutoTokenizer  # Not BertTokenizer
 from sklearn.preprocessing import LabelEncoder
-from datasets import load_dataset, Dataset
+from llm_utils.data.dataset_loading import load_dataset_auto
 from typing import cast, Any, Tuple
 from sklearn.metrics import classification_report
 from tqdm import tqdm
@@ -132,8 +132,7 @@ def run_repl(model, tokenizer, label_encoder, device, min_confidence=None, model
             break
 
 def evaluate_bulk(data_path, model, tokenizer, label_encoder, device, text_field="text", label_field="label", min_confidence=None, detail=False, model_type="sequence", is_binary_sigmoid=False):
-    dataset_obj = load_dataset("json", data_files=data_path)
-    dataset = dataset_obj["train"] if isinstance(dataset_obj, dict) and "train" in dataset_obj else dataset_obj
+    dataset = load_dataset_auto(data_path)
     if not isinstance(dataset, Dataset):
         raise TypeError("Loaded dataset is not a regular Dataset; check if streaming mode or a different format was used.")
     y_true = []
