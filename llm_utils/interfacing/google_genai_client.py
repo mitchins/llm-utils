@@ -1,5 +1,6 @@
 import os
 import logging
+import base64
 from llm_utils.interfacing.base_client import BaseLLMClient
 
 try:
@@ -30,7 +31,7 @@ class GoogleLLMClient(BaseLLMClient):
         self.timeout = timeout
         self.max_output_tokens = max_output_tokens
 
-    def generate(self, prompt, system="", temperature=0.0) -> str:
+    def generate(self, prompt, system="", temperature=0.0, images=None) -> str:
         if not prompt or len(prompt) == 0:
             raise ValueError("Prompt must not be empty for GoogleLLMClient.")
         if not self.model:
@@ -54,8 +55,24 @@ class GoogleLLMClient(BaseLLMClient):
                 HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
             }
 
+            contents = []
+            if images:
+                parts = []
+                if prompt:
+                    parts.append(prompt)
+                for img in images:
+                    parts.append({
+                        "inline_data": {
+                            "mime_type": "image/png",
+                            "data": base64.b64decode(img),
+                        }
+                    })
+                contents.append({"role": "user", "parts": parts})
+            else:
+                contents = prompt
+
             response = model_instance.generate_content(
-                contents=prompt,
+                contents=contents,
                 generation_config=generation_config,
                 safety_settings=safety_settings,
             )

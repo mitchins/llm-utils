@@ -17,6 +17,19 @@ def test_generate_from_list():
     client = MockLLMClient(responses, model_name="m1")
     assert client.generate("hi", system="sys", temperature=0.0) == "hello"
 
+def test_generate_with_images():
+    responses = [
+        {
+            "model": "m1",
+            "system": "sys",
+            "prompt": "hi",
+            "temperature": 0.0,
+            "response": "hello"
+        }
+    ]
+    client = MockLLMClient(responses, model_name="m1")
+    assert client.generate("hi", system="sys", temperature=0.0, images=["AAA"]) == "hello"
+
 
 def test_generate_from_file(tmp_path):
     data = [

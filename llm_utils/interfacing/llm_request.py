@@ -40,7 +40,7 @@ class OpenAILikeLLMClient(BaseLLMClient):
         )
 
     # This just wraps the original chat method to match the new interface
-    def generate(self, prompt: str, system: str = "", temperature: float = 0.0) -> str:
+    def generate(self, prompt: str, system: str = "", temperature: float = 0.0, images=None) -> str:
         if system:
             self.system_prompt = system.strip()
         
@@ -49,20 +49,35 @@ class OpenAILikeLLMClient(BaseLLMClient):
             temperature=temperature if temperature is not None else self.temperature,
             max_tokens=self.max_tokens,
             repetition_penalty=self.repetition_penalty,
+            images=images,
             stream=False
         )
         return response
     
     # Holdover from the original interface
-    def chat(self, prompt, temperature=None, max_tokens=None, repetition_penalty=None, stream=False):
+    def chat(self, prompt, temperature=None, max_tokens=None, repetition_penalty=None, images=None, stream=False):
         if stream:
             raise NotImplementedError("Streaming is not supported yet.")
         
+        user_content = {"role": "user"}
+        if images:
+            parts = []
+            if prompt:
+                parts.append({"type": "text", "text": prompt})
+            for img in images:
+                parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{img}"}
+                })
+            user_content["content"] = parts
+        else:
+            user_content["content"] = prompt
+
         payload = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": self.system_prompt.strip()},
-                {"role": "user", "content": prompt}
+                user_content
             ],
             "temperature": temperature if temperature is not None else self.temperature,
             "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
