@@ -40,7 +40,13 @@ class OpenAILikeLLMClient(BaseLLMClient):
         )
 
     # This just wraps the original chat method to match the new interface
-    def generate(self, prompt: str, system: str = "", temperature: float = 0.0, images=None) -> str:
+    def generate(
+        self,
+        prompt: str,
+        system: str = "",
+        temperature: float = 0.0,
+        images: list[str] | None = None,
+    ) -> str:
         if system:
             self.system_prompt = system.strip()
         
@@ -55,7 +61,15 @@ class OpenAILikeLLMClient(BaseLLMClient):
         return response
     
     # Holdover from the original interface
-    def chat(self, prompt, temperature=None, max_tokens=None, repetition_penalty=None, stream=False, images=None):
+    def chat(
+        self,
+        prompt: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        repetition_penalty: float | None = None,
+        stream: bool = False,
+        images: list[str] | None = None,
+    ):
         if stream:
             raise NotImplementedError("Streaming is not supported yet.")
         
