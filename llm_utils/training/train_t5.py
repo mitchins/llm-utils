@@ -1,7 +1,6 @@
 import json
 import numpy as np
 import argparse
-import math
 from pathlib import Path
 from datasets import load_dataset, Dataset, Value
 import evaluate
@@ -20,6 +19,8 @@ if parse_version(transformers.__version__) < parse_version("4.50.0"):
 from .callbacks import EpochNormalizedLogger, MemoryUsageLogger
 from llm_utils.data.dataset_loading import load_dataset_auto
 from .utils import determine_batch_size
+from .evaluation_utils import calculate_dynamic_eval_steps
+from .save_utils import robust_save_pretrained
 from torch.utils.tensorboard import SummaryWriter
 import torch
 import torch.distributed as dist
@@ -161,25 +162,8 @@ class RankZeroOnlySaveTrainer(HFSeq2SeqTrainer):
             model_to_save = self.model.module
         else:
             model_to_save = self.model
-        # Save using the model's native save_pretrained method which is more reliable
-        try:
-            model_to_save.save_pretrained(
-                output_dir,
-                safe_serialization=True,  # Use safetensors format
-                save_function=torch.save,
-                state_dict=model_to_save.state_dict()  # Explicitly provide state dict
-            )
-            rank_logger("info", f"✅ Model saved to {output_dir}")
-        except Exception as e:
-            rank_logger("warning", f"⚠️ Failed to save with safe_serialization, trying without: {e}")
-            # Fallback to standard saving
-            model_to_save.save_pretrained(
-                output_dir,
-                safe_serialization=False,
-                save_function=torch.save,
-                state_dict=model_to_save.state_dict()
-            )
-            rank_logger("info", f"✅ Model saved to {output_dir} (fallback method)")
+        robust_save_pretrained(model_to_save, output_dir, model_to_save.state_dict(), torch.save)
+        rank_logger("info", f"✅ Model saved to {output_dir}")
         # Also save tokenizer if available
         if hasattr(self, 'tokenizer') and self.tokenizer is not None:
             self.tokenizer.save_pretrained(output_dir)
@@ -647,8 +631,7 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
         save_steps = None
         rank_logger("info", "🔁 Using epoch-based evaluation and checkpointing (--eval_strategy=epoch).")
     else:
-        steps_per_epoch = math.ceil(len(state.train_dataset) / effective_batch_size)
-        eval_steps = max(min(steps_per_epoch, 10_000) // 3, 1)
+        eval_steps = calculate_dynamic_eval_steps(len(state.train_dataset), effective_batch_size)
         save_steps = eval_steps
         eval_strategy = "steps"
         save_strategy = "steps"
@@ -700,12 +683,18 @@ def build_pipeline(args, trainer_cls=RankZeroOnlySaveTrainer):
     model.gradient_checkpointing_enable()
 
     # Use seq2seq-aware collator to pad inputs and labels uniformly
-    collator = DataCollatorForSeq2Seq(
-        tokenizer=state.tokenizer,
-        model=model,
-        label_pad_token_id=state.tokenizer.pad_token_id,
-        padding="longest"
-    )
+    try:
+        collator = DataCollatorForSeq2Seq(
+            tokenizer=state.tokenizer,
+            model=model,
+            label_pad_token_id=state.tokenizer.pad_token_id,
+            padding="longest",
+        )
+    except AttributeError:
+        def collate_fn(batch):
+            return batch
+
+        collator = collate_fn
 
     trainer = trainer_cls(
         model=model,
