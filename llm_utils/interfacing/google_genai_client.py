@@ -1,7 +1,7 @@
 import os
 import logging
 import base64
-from llm_utils.interfacing.base_client import BaseLLMClient
+from llm_utils.interfacing.base_client import BaseLLMClient, RateLimitExceeded
 
 try:
     import google.generativeai as genai
@@ -85,4 +85,9 @@ class GoogleLLMClient(BaseLLMClient):
                     finish_reason = response.prompt_feedback.block_reason
                 return f"Response was blocked due to: {finish_reason}"
         except Exception as e:
+            # Check for rate limit errors (HTTP 429)
+            if hasattr(e, 'status_code') and e.status_code == 429:
+                raise RateLimitExceeded(f"Google API rate limit exceeded: {e}")
+            elif "429" in str(e) or "rate limit" in str(e).lower():
+                raise RateLimitExceeded(f"Google API rate limit exceeded: {e}")
             return f"An error occurred during generation: {e}"

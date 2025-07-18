@@ -5,6 +5,14 @@ class LLMError(Exception):
     """Base exception for all LLM clients."""
 
 
+class RateLimitExceeded(LLMError):
+    """Exception raised when API rate limit is exceeded."""
+    
+    def __init__(self, details: str = "Rate limit exceeded"):
+        self.details = details
+        super().__init__(details)
+
+
 class BaseLLMClient(ABC):
     def __init__(self, model_name=None, system_prompt=None):
         """
