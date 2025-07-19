@@ -17,21 +17,83 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 class GoogleLLMClient(BaseLLMClient):
-    """A client for Google's Generative AI models (Gemini)."""
+    """A client for Google's Generative AI models (Gemini) with built-in resilience features.
+
+    This client provides robust error handling and high availability through:
+    
+    **API Key Management**:
+    - Requires explicit API key provision (no environment variable fallbacks)
+    - Supports single API key or multiple keys for rotation
+    - Automatic key rotation on rate limit errors (429 status codes)
+    
+    **Error Handling & Retries**:
+    - Automatic retries with configurable intervals
+    - Rate limit detection and handling
+    - Proper exception propagation instead of silent failures
+    
+    **Key Rotation Behavior**:
+    When multiple API keys are provided:
+    1. Starts with the first key in the list
+    2. On rate limit error, immediately rotates to the next available key
+    3. If all keys are exhausted, waits `retry_interval` seconds
+    4. Retries the entire key rotation cycle up to `max_retries` times
+    5. Raises RateLimitExceeded if all retries are exhausted
+    
+    **Thread Safety**: 
+    Each instance maintains its own key rotation state. Multiple instances
+    can safely use the same or overlapping key sets without interference.
+    
+    Example:
+        >>> # Single key usage
+        >>> client = GoogleLLMClient(model="gemini-pro", api_key="your-key")
+        >>> response = client.generate("Hello world")
+        
+        >>> # Multiple keys for rotation
+        >>> client = GoogleLLMClient(
+        ...     model="gemini-pro", 
+        ...     api_key=["key1", "key2", "key3"],
+        ...     max_retries=2,
+        ...     retry_interval=10
+        ... )
+        >>> response = client.generate("Hello world")
+    """
 
     def __init__(self,
-                 model=None,
-                 api_key: Union[str, List[str]] = None,
+                 model: str,
+                 api_key: Union[str, List[str]],
                  timeout: int = 60,
                  max_output_tokens: int = 4096,
+                 max_retries: int = 1,
+                 retry_interval: int = 5,
                  **kwargs):
-        super().__init__(model)
+        """
+        Initializes the GoogleLLMClient.
+
+        Args:
+            model (str): The name of the Gemini model to use (e.g., "gemini-pro").
+            api_key (Union[str, List[str]]): A single API key or a list of API keys
+                for rotation. This parameter is required and must be explicitly provided.
+                When multiple keys are provided, the client will automatically rotate
+                through them on rate limit errors to maximize uptime.
+            timeout (int): Request timeout in seconds. Defaults to 60.
+            max_output_tokens (int): The maximum number of tokens to generate. Defaults to 4096.
+            max_retries (int): The maximum number of times to retry the request
+                after all API keys have been exhausted. Defaults to 1.
+            retry_interval (int): The number of seconds to wait between retries. Defaults to 5.
+            
+        Raises:
+            ValueError: If api_key is None, empty, or not a string/list of strings.
+            ImportError: If the google-generativeai library is not installed.
+        """
+        super().__init__(model, max_retries=max_retries, retry_interval=retry_interval)
         
-        # Handle both single key and key rotation
+        # Validate api_key parameter - no environment variable fallbacks
         if api_key is None:
-            api_key = os.getenv("GEMINI_API_KEY")
-            if not api_key:
-                raise ValueError("GEMINI_API_KEY environment variable is not set. Please set it to use the Google LLM client.")
+            raise ValueError(
+                "api_key parameter is required. Please provide either a single API key "
+                "(string) or multiple API keys (list) for rotation. Environment variable "
+                "fallbacks have been removed for security reasons."
+            )
         
         if isinstance(api_key, str):
             # Single key mode - convert to list for consistency
@@ -104,7 +166,7 @@ class GoogleLLMClient(BaseLLMClient):
                 finish_reason = response.prompt_feedback.block_reason
             return f"Response was blocked due to: {finish_reason}"
 
-    def generate(
+    def _generate(
         self,
         prompt: str,
         system: str = "",
@@ -130,4 +192,4 @@ class GoogleLLMClient(BaseLLMClient):
             # Check for rate limit errors (HTTP 429)
             if self._is_rate_limit_error(e):
                 raise RateLimitExceeded(f"Google API rate limit exceeded: {e}")
-            return f"An error occurred during generation: {e}"
+            raise Exception(f"An error occurred during generation: {e}")

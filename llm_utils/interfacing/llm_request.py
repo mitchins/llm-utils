@@ -1,6 +1,6 @@
 import httpx
 import os
-from .base_client import BaseLLMClient, LLMError
+from .base_client import BaseLLMClient, LLMError, RateLimitExceeded
 
 class LLMTimeoutError(LLMError):
     """Raised when the LLM request times out."""
@@ -20,15 +20,52 @@ class LLMInvalidRequestError(LLMError):
 class LLMUnexpectedResponseError(LLMError):
     """Raised when an unexpected response is received from the server."""
 
-DEFAULT_MODEL = os.getenv("LLM_MODEL", "qwen:14b")
-DEFAULT_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:1234/v1")
+# Default values - environment variables have been removed for security
+# Users must explicitly provide model and base_url parameters
+DEFAULT_MODEL = "qwen:14b"
+DEFAULT_BASE_URL = "http://localhost:1234/v1"
 
 class OpenAILikeLLMClient(BaseLLMClient):
-    def __init__(self, model=None, base_url=None, timeout=60, system_prompt=None, temperature=0.7, max_tokens=1024, repetition_penalty=1.1, client=None):
-        self.model = model or os.getenv("LLM_MODEL", "qwen:14b")
-        self.base_url = base_url or os.getenv("LLM_BASE_URL", "http://localhost:1234/v1")
+    """A client for OpenAI-compatible LLM endpoints.
+
+    This client supports automatic retries on 429 rate limit errors.
+    
+    **Security Note**: All parameters must be explicitly provided. Environment
+    variable fallbacks have been removed for security reasons. Use the base_url
+    and model parameters directly.
+    
+    Args:
+        model (str, optional): The name of the model to use. Defaults to "qwen:14b".
+        base_url (str, optional): The base URL of the LLM server. 
+            Defaults to "http://localhost:1234/v1".
+        timeout (int): Request timeout in seconds.
+        system_prompt (str, optional): The system prompt to use.
+        temperature (float): The sampling temperature.
+        max_tokens (int): The maximum number of tokens to generate.
+        repetition_penalty (float): The penalty for token repetition.
+        client (httpx.Client, optional): An existing httpx client to use.
+        max_retries (int): The maximum number of retries on rate limit errors.
+        retry_interval (int): The number of seconds to wait between retries.
+    """
+    def __init__(self, model=None, base_url=None, timeout=60, system_prompt=None, temperature=0.7, max_tokens=1024, repetition_penalty=1.1, client=None, max_retries=1, retry_interval=5):
+        """
+        Initializes the OpenAILikeLLMClient.
+
+        Args:
+            model (str, optional): The name of the model to use.
+            base_url (str, optional): The base URL of the LLM server.
+            timeout (int): Request timeout in seconds.
+            system_prompt (str, optional): The system prompt to use.
+            temperature (float): The sampling temperature.
+            max_tokens (int): The maximum number of tokens to generate.
+            repetition_penalty (float): The penalty for token repetition.
+            client (httpx.Client, optional): An existing httpx client to use.
+            max_retries (int): The maximum number of retries on rate limit errors.
+            retry_interval (int): The number of seconds to wait between retries.
+        """
+        super().__init__(model, system_prompt=system_prompt, max_retries=max_retries, retry_interval=retry_interval)
+        self.base_url = base_url or DEFAULT_BASE_URL
         self.timeout = timeout
-        self.system_prompt = system_prompt or os.getenv("LLM_SYSTEM_PROMPT", "You are a helpful and concise assistant.")
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.repetition_penalty = repetition_penalty
@@ -39,8 +76,7 @@ class OpenAILikeLLMClient(BaseLLMClient):
             )
         )
 
-    # This just wraps the original chat method to match the new interface
-    def generate(
+    def _generate(
         self,
         prompt: str,
         system: str = "",
@@ -100,7 +136,9 @@ class OpenAILikeLLMClient(BaseLLMClient):
         except httpx.RequestError as e:
             raise LLMConnectionError(f"Unexpected request error: {e}")
 
-        if response.status_code == 404 and "model" in response.text.lower():
+        if response.status_code == 429:
+            raise RateLimitExceeded(f"Rate limit exceeded: {response.text}")
+        elif response.status_code == 404 and "model" in response.text.lower():
             raise LLMModelNotFoundError(f"Model not found: {self.model}")
         elif response.status_code in (401, 403):
             raise LLMAccessDeniedError("Access denied: check authentication or permissions.")
@@ -144,6 +182,8 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=1024, help="Maximum number of tokens to generate.")
     parser.add_argument("--repetition-penalty", type=float, default=1.1, help="Penalty for token repetition.")
     parser.add_argument("--system-prompt", type=str, default=None, help="System prompt for the LLM.")
+    parser.add_argument("--max-retries", type=int, default=3, help="Maximum number of retries on rate limit errors.")
+    parser.add_argument("--retry-interval", type=int, default=5, help="Seconds to wait between retries.")
 
     args = parser.parse_args()
 
@@ -153,10 +193,13 @@ def main():
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         repetition_penalty=args.repetition_penalty,
-        system_prompt=args.system_prompt
+        system_prompt=args.system_prompt,
+        max_retries=args.max_retries,
+        retry_interval=args.retry_interval
     )
 
-    response = client.chat(args.prompt)
+    response = client.generate(args.prompt)
     print(response)
 
-if __name__ == "__main__":    main()
+if __name__ == "__main__":
+    main()

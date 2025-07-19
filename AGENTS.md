@@ -1,66 +1,42 @@
 # Agent Guidelines
 
-## Testing
-To run the full test suite you **must** install the optional training and test
-dependencies (this pulls in heavy packages such as `datasets`):
+This document provides guidance for agents (both human and automated) on how to interact with and contribute to the `mc-llm-utils` repository.
 
-```bash
-pip install -e .[training,test]
-pip install evaluate
-```
+## Core Repository Structure
 
-Once dependencies are installed, execute the tests with `pytest`.
+- **`llm_utils/interfacing/`**: LLM client implementations, including the base client with retry logic and the Google Gemini client with key rotation.
+- **`llm_utils/training/`**: Scripts for model training and data preparation.
+- **`tests/`**: Unit and integration tests. New features should be accompanied by corresponding tests.
 
-## Code Overview
-Agents should begin by familiarizing themselves with the core training pipeline implementation:
-- **Location**: `llm_utils/training/train_t5.py`
-- **Key phases**:
-  1. **Tokenizer Load**: Loading and configuring `AutoTokenizer`.
-  2. **Tokenization Phase**: `log_length_histogram` and `tokenize_dataset` pipeline.
-  3. **Filtering**: Removing examples exceeding `--max-input-length`.
-  4. **Model Load**: Instantiating `AutoModelForSeq2SeqLM`.
-  5. **Collator Setup**: Configuring `DataCollatorForSeq2Seq` for padding inputs and labels.
-  6. **Trainer Construction**: Building `HFSeq2SeqTrainer` subclass and setting callbacks.
-  7. **Training Loop**: `trainer.train()` execution.
+## Key Feature: Resilient LLM Clients
 
-## Reviewing Tokenization
-- Inspect the `preprocess_t5` function for input/target tokenization logic.
-- Confirm `tokenize_dataset` drops original text columns and retains `"input_ids"`, `"attention_mask"`, and `"labels"`.
-- Verify the `log_length_histogram` output matches expected distributions when running on sample data.
+A primary feature of this library is its resilience to rate limiting. This is achieved through two mechanisms:
 
-## Testing Specific Components
-Agents should run and expand existing tests under `tests/training/`, including:
-- **`test_collator_padding` / `test_collator_pad_behavior`**: Ensure the seq2seq collator pads both inputs and labels uniformly.
-- **`test_log_length_histogram`**: Confirm that histogram bins scale to the data range and respect the `max_bins` parameter.
-- **`test_tokenizer_override`**: Validate that overriding the tokenizer (e.g., with a fake `model_max_length`) correctly adjusts `--max-input-length`.
+1.  **Backoff and Retry**: The `BaseLLMClient` automatically retries requests that fail with a 429 status code. This is configured with the `max_retries` and `retry_interval` parameters.
+2.  **API Key Rotation**: The `GoogleLLMClient` can be initialized with a list of API keys. If a request fails due to a rate limit, the client will automatically switch to the next available key.
 
-## Expanding and Debugging
-- To add new functionality or edge-case handling, create corresponding unit tests in `tests/training/`.
-- Use `pytest -q --disable-warnings --maxfail=1` to quickly iterate on failures.
-- For debugging, leverage `rank_logger` and set `--debug` for verbose logs.
-- When modifying padding or truncation behavior, check both real tokenizer outputs and dummy stubs to ensure consistency.
+These features work together to ensure that requests are handled as robustly as possible.
 
+## Testing Guidelines
 
-## Environment and Dependencies
-- Python 3.10+, `pip install -e .[training,test] evaluate numpy pytest`
-- Ensure `transformers`, `datasets`, and `evaluate` packages are installed at compatible versions.
+- **Full Test Suite**: To run the complete test suite, including tests for training and data utilities, install the `training` and `test` extras:
 
+  ```bash
+  pip install -e .[training,test]
+  pip install evaluate
+  pytest
+  ```
 
-Agents should reference this file when onboarding new reviewers or automating test runs.
+- **Testing Resiliency Features**: To test the backoff and key rotation features, see the following test files:
+  - `tests/interfacing/test_base_client_retry.py`
+  - `tests/interfacing/test_google_genai_client_rotation.py`
+  - `tests/interfacing/test_backoff_and_rotation.py`
 
+## Development Workflow
 
-## API Changes Beyond Model Cutoff
+1.  **Create a Virtual Environment**: Use a virtual environment to manage dependencies.
+2.  **Install in Editable Mode**: Install the package in editable mode with the `test` and `training` extras.
+3.  **Add New Features and Tests**: When adding a new feature, ensure that it is accompanied by corresponding tests.
+4.  **Run Tests**: Run `pytest` to ensure that all tests pass.
+5.  **Update Documentation**: Update the `README.md` and any other relevant documentation to reflect the changes.
 
-Some Transformers API attributes and arguments have been renamed in newer versions. Notable changes include:
-
-- `TrainingArguments.evaluation_strategy` has been renamed to `eval_strategy`.
-- `Trainer.tokenizer` has been renamed to `processing_class` in Trainer initialization.
-
-## Versioning
-- After making any significant changes to `train_t5.py`, update the project version to reflect the changes.
-- Locate the version string in `setup.py` or `pyproject.toml` (e.g., `version="X.Y.Z"`).
-- Increment the patch number (e.g., from `1.2.3` to `1.2.4`) for bug fixes or minor improvements.
-- Commit the version bump as part of the same pull request.
-
-## Environment
-- A virtual environment should be used for managing dependencies and may exist as a `.venv` directory.

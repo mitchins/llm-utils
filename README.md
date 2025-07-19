@@ -1,127 +1,114 @@
 # mc-llm-utils
-Training and interface scripts for LLMs that are general purpose. The library
-contains helpers for preparing datasets, running model training and sending
-requests to OpenAI-compatible endpoints.
 
-## Capabilities
+Lightweight utilities for LLM data parsing, training, and inference, with a focus on resilience and ease of use.
 
-The repository is organised by feature area so you can quickly locate the
-relevant utilities:
+## Features
 
-- **Data utilities** (`llm_utils/data/`)
-  - `analyze_token_lengths.py` – check average token counts
-  - `intersect_dataset.py` – find the overlap between datasets
-  - `semantic_sample.py` – draw a semantically diverse subset
-- **Training scripts** (`llm_utils/training/`)
-  - `train_bert.py` and `train_bert_ner.py` – fine-tune BERT models
-  - `train_t5.py` – fine-tune T5 style models
-  - `prepare_dataset.py` – convert common formats
-- **Inference tools** (`llm_utils/inference/`)
-  - `run_bert.py` and `run_t5.py` – load a trained model for prediction
-- **Interfacing helpers** (`llm_utils/interfacing/`)
-  - `llm_request.py` – simple command line client
-  - `google_genai_client.py` – Google Gemini implementation
-  - `mock_client.py` – client for tests
-  - `client_factory.py` and `base_client.py`
-- **Output parsing** (`llm_utils/llm_parsers.py`)
-  - Utilities to extract structured responses from models
-
-Additional scripts such as `semantic_sample.py` at the repository root and the
-`tests/` directory demonstrate typical usage of these tools.
+- **Resilient LLM Clients**: Built-in support for rate limit handling, including:
+  - **Automatic Retries**: Automatically retries requests on 429 errors with a configurable backoff interval.
+  - **API Key Rotation**: Seamlessly rotates through a list of API keys to maximize uptime and avoid rate limits.
+  - **Explicit Security**: No silent environment variable dependencies - all API keys must be explicitly provided.
+- **Flexible Training Scripts**: Fine-tune common models like T5 and BERT with scripts that expose key hyperparameters.
+- **Data Preparation Tools**: A collection of scripts to analyze, sample, and prepare your datasets for training.
+- **OpenAI & Google Gemini Support**: Out-of-the-box clients for both OpenAI-compatible endpoints and Google's Generative AI.
 
 ## Installation
 
-Clone the repository and install in editable mode so the command line scripts
-are available. By default only the lightweight dependencies used by
-`llm-request` are installed. Extra groups are provided for training, Google
-Gemini support and test utilities.
+Install the library and its dependencies using pip. Optional extras are available for training, testing, and Google Gemini support.
 
 ```bash
-pip install -e .            # minimal install with httpx only
+# Minimal installation
+pip install mc-llm-utils
 
-# Install training extras
-pip install -e .[training]
+# With training dependencies
+pip install mc-llm-utils[training]
 
-# Install Google Gemini extras
-pip install -e .[google]
+# With Google Gemini support
+pip install mc-llm-utils[google]
 
-# Install test extras
-pip install -e .[test]
-```
-
-## Key scripts
-
-`train-bert` trains a BERT style classifier or regressor. The script exposes
-many command line arguments but the minimal invocation looks like:
-
-```bash
-train-bert --data-path training_data.jsonl --output-dir bert_model
-```
-
-`llm-request` provides a simple interface to query a running LLM server:
-
-```bash
-llm-request "Hello" --model my-model --base-url http://localhost:8000
-```
-
-## Running the tests
-
-The test suite uses **pytest**. Install the training and test extras so
-heavy libraries like `datasets` are available:
-
-```bash
+# For development and testing
 pip install -e .[training,test]
-pip install evaluate
-pytest
 ```
 
-## Google Gemini client
+## Usage
 
-The `GoogleLLMClient` allows interfacing with Google's Generative AI models.
-Install the optional extras and set `GEMINI_API_KEY`:
+### Command-Line Interface
+
+The `llm-request` command provides a simple way to query any OpenAI-compatible LLM endpoint. It now supports automatic retries on rate limit errors.
 
 ```bash
-pip install -e .[google]
-export GEMINI_API_KEY=your-key-here
+llm-request "Translate to French: Hello, world!" \
+  --model my-model \
+  --base-url http://localhost:8000 \
+  --max-retries 3 \
+  --retry-interval 10
 ```
 
+### Google Gemini Client
 
-## MockLLMClient
+The `GoogleLLMClient` provides access to Google's Gemini models and includes built-in support for API key rotation and backoff.
 
-`MockLLMClient` is a lightweight implementation of `BaseLLMClient` useful for unit tests. It loads predefined
-responses either from a list of dictionaries or from a JSON file. Each entry describes the request and the
-expected response.
+**Security Note**: API keys must be explicitly provided as parameters. Environment variable fallbacks have been removed for security reasons.
 
-Example JSON structure:
-
-```json
-[
-  {
-    "model": "test-model",
-    "system": "Assistant",
-    "prompt": "Hello",
-    "temperature": 0.0,
-    "response": "Hi there"
-  }
-]
-```
-
-Usage:
+#### Single API Key Usage
 
 ```python
-from llm_utils.interfacing.mock_client import MockLLMClient
+from llm_utils.interfacing.google_genai_client import GoogleLLMClient
 
-responses = [
-    {
-        "model": "test-model",
-        "system": "Assistant",
-        "prompt": "Hello",
-        "temperature": 0.0,
-        "response": "Hi there"
-    }
-]
+# Single API key
+client = GoogleLLMClient(
+    model="gemini-pro", 
+    api_key="your-api-key-here",
+    max_retries=2, 
+    retry_interval=5
+)
 
-client = MockLLMClient(responses, model_name="test-model")
-text = client.generate("Hello", system="Assistant")
-print(text)  # "Hi there"
+response = client.generate("What is the capital of France?")
+print(response)
 ```
+
+#### API Key Rotation for High Availability
+
+For production environments, provide multiple API keys to enable automatic rotation on rate limits:
+
+```python
+# Multiple API keys for rotation
+client = GoogleLLMClient(
+    model="gemini-pro",
+    api_key=["key1", "key2", "key3"],  # Rotates through keys on rate limits
+    max_retries=2,
+    retry_interval=5
+)
+
+response = client.generate("What is the capital of France?")
+print(response)
+```
+
+**Key Rotation Behavior**: When rate limits are encountered, the client automatically rotates to the next available API key. If all keys are exhausted, it waits `retry_interval` seconds before retrying the entire rotation cycle.
+
+## Contributing
+
+Contributions are welcome! To get started:
+
+1.  **Install Dependencies**: For running the full test suite, you'll need the `training` and `test` extras.
+
+    ```bash
+    pip install -e .[training,test]
+    pip install evaluate
+    ```
+
+2.  **Run Tests**: Use `pytest` to run the test suite.
+
+    ```bash
+    pytest
+    ```
+
+## Core Components
+
+The repository is organized into the following key areas:
+
+- **`llm_utils/interfacing/`**: Contains the `BaseLLMClient`, `GoogleLLMClient`, and `OpenAILikeLLMClient` for interacting with LLMs.
+- **`llm_utils/training/`**: Includes scripts for fine-tuning models like T5 and BERT.
+- **`llm_utils/data/`**: Provides tools for dataset analysis and preparation.
+- **`tests/`**: Contains unit and integration tests for the library.
+
