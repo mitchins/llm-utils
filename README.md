@@ -1,4 +1,4 @@
-# llm-utils
+# mc-llm-utils
 Training and interface scripts for LLMs that are general purpose. The library
 contains helpers for preparing datasets, running model training and sending
 requests to OpenAI-compatible endpoints.

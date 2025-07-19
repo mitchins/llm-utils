@@ -61,3 +61,6 @@ Some Transformers API attributes and arguments have been renamed in newer versio
 - Locate the version string in `setup.py` or `pyproject.toml` (e.g., `version="X.Y.Z"`).
 - Increment the patch number (e.g., from `1.2.3` to `1.2.4`) for bug fixes or minor improvements.
 - Commit the version bump as part of the same pull request.
+
+## Environment
+- A virtual environment should be used for managing dependencies and may exist as a `.venv` directory.
