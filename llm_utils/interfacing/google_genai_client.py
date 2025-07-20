@@ -1,7 +1,8 @@
 import os
 import logging
 import base64
-from typing import Union, List
+from typing import Union, List, Optional, Dict, Any
+from dataclasses import dataclass
 from llm_utils.interfacing.base_client import BaseLLMClient, RateLimitExceeded
 from llm_utils.interfacing.key_rotation import KeyRotationManager
 
@@ -15,6 +16,159 @@ except ImportError:
     logger.warning("Google Generative AI library is not installed. Some features may be unavailable.")
 
 logger = logging.getLogger(__name__)
+
+
+class GeminiContentBlockedException(Exception):
+    """Raised when Gemini blocks content due to safety filters."""
+    
+    def __init__(self, message: str, response: 'GeminiResponse' = None):
+        """
+        Initialize with a clear message and optional detailed response for debugging.
+        
+        Args:
+            message (str): Clear, user-friendly explanation of why content was blocked
+            response (GeminiResponse, optional): Full response object for detailed analysis
+        """
+        super().__init__(message)
+        self.response = response
+
+
+@dataclass
+class GeminiUsageMetadata:
+    """Usage statistics from Gemini API response."""
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    
+    @classmethod
+    def from_response(cls, usage_metadata) -> 'GeminiUsageMetadata':
+        """Create from Gemini response usage_metadata."""
+        if usage_metadata is None:
+            return cls()
+        return cls(
+            input_tokens=getattr(usage_metadata, 'prompt_token_count', None),
+            output_tokens=getattr(usage_metadata, 'candidates_token_count', None),
+            total_tokens=getattr(usage_metadata, 'total_token_count', None)
+        )
+
+
+@dataclass 
+class GeminiSafetyRating:
+    """Safety rating for a specific harm category."""
+    category: str
+    probability: str
+    blocked: bool = False
+    
+    @classmethod
+    def from_response(cls, rating) -> 'GeminiSafetyRating':
+        """Create from Gemini response safety rating."""
+        return cls(
+            category=str(rating.category.name) if hasattr(rating.category, 'name') else str(rating.category),
+            probability=str(rating.probability.name) if hasattr(rating.probability, 'name') else str(rating.probability),
+            blocked=getattr(rating, 'blocked', False)
+        )
+
+
+@dataclass
+class GeminiCandidate:
+    """Candidate response from Gemini."""
+    content: str
+    finish_reason: Optional[str] = None
+    safety_ratings: List[GeminiSafetyRating] = None
+    index: int = 0
+    
+    def __post_init__(self):
+        if self.safety_ratings is None:
+            self.safety_ratings = []
+    
+    @classmethod
+    def from_response(cls, candidate, index: int = 0) -> 'GeminiCandidate':
+        """Create from Gemini response candidate."""
+        content = ""
+        if hasattr(candidate, 'content') and candidate.content:
+            if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                content = candidate.content.parts[0].text if candidate.content.parts[0].text else ""
+        
+        finish_reason = None
+        if hasattr(candidate, 'finish_reason'):
+            finish_reason = str(candidate.finish_reason.name) if hasattr(candidate.finish_reason, 'name') else str(candidate.finish_reason)
+        
+        safety_ratings = []
+        if hasattr(candidate, 'safety_ratings') and candidate.safety_ratings:
+            safety_ratings = [GeminiSafetyRating.from_response(rating) for rating in candidate.safety_ratings]
+        
+        return cls(
+            content=content,
+            finish_reason=finish_reason,
+            safety_ratings=safety_ratings,
+            index=index
+        )
+
+
+@dataclass
+class GeminiResponse:
+    """Comprehensive response from Google Gemini API with all metadata."""
+    text: str
+    candidates: List[GeminiCandidate]
+    usage_metadata: GeminiUsageMetadata
+    prompt_feedback: Optional[Dict[str, Any]] = None
+    blocked: bool = False
+    block_reason: Optional[str] = None
+    
+    def __post_init__(self):
+        if self.candidates is None:
+            self.candidates = []
+    
+    @classmethod
+    def from_response(cls, response) -> 'GeminiResponse':
+        """Create comprehensive response from Gemini API response."""
+        # Extract primary text
+        text = ""
+        if hasattr(response, 'text') and response.text:
+            text = response.text
+        elif hasattr(response, 'parts') and response.parts:
+            text = response.parts[0].text if response.parts[0].text else ""
+        
+        # Extract candidates with all metadata
+        candidates = []
+        if hasattr(response, 'candidates') and response.candidates:
+            candidates = [GeminiCandidate.from_response(candidate, i) 
+                         for i, candidate in enumerate(response.candidates)]
+        
+        # Extract usage metadata
+        usage_metadata = GeminiUsageMetadata.from_response(
+            getattr(response, 'usage_metadata', None)
+        )
+        
+        # Extract prompt feedback
+        prompt_feedback = None
+        blocked = False
+        block_reason = None
+        
+        if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
+            prompt_feedback = {
+                'block_reason': getattr(response.prompt_feedback, 'block_reason', None),
+                'safety_ratings': []
+            }
+            
+            if hasattr(response.prompt_feedback, 'block_reason') and response.prompt_feedback.block_reason:
+                blocked = True
+                block_reason = str(response.prompt_feedback.block_reason.name) if hasattr(response.prompt_feedback.block_reason, 'name') else str(response.prompt_feedback.block_reason)
+            
+            if hasattr(response.prompt_feedback, 'safety_ratings') and response.prompt_feedback.safety_ratings:
+                prompt_feedback['safety_ratings'] = [
+                    GeminiSafetyRating.from_response(rating) 
+                    for rating in response.prompt_feedback.safety_ratings
+                ]
+        
+        return cls(
+            text=text,
+            candidates=candidates,
+            usage_metadata=usage_metadata,
+            prompt_feedback=prompt_feedback,
+            blocked=blocked,
+            block_reason=block_reason
+        )
 
 class GoogleLLMClient(BaseLLMClient):
     """A client for Google's Generative AI models (Gemini) with built-in resilience features.
@@ -113,6 +267,28 @@ class GoogleLLMClient(BaseLLMClient):
         
         self.timeout = timeout
         self.max_output_tokens = max_output_tokens
+    
+    def _get_user_friendly_block_message(self, response: 'GeminiResponse') -> str:
+        """Convert technical block reasons into clear, actionable user messages."""
+        block_reason = response.block_reason
+        
+        if not block_reason:
+            return "Content generation was blocked (no specific reason provided)"
+        
+        # Convert technical reasons to user-friendly messages
+        reason_lower = str(block_reason).lower()
+        
+        if "safety" in reason_lower or "harm" in reason_lower:
+            return "Content was blocked due to safety guidelines"
+        elif "recitation" in reason_lower:
+            return "Content was blocked due to potential copyright concerns"
+        elif "other" in reason_lower:
+            return "Content was blocked for policy reasons"
+        elif "prohibited" in reason_lower:
+            return "Content violates usage policies"
+        else:
+            # Fallback for unknown reasons
+            return f"Content was blocked: {block_reason}"
 
     def _is_rate_limit_error(self, exception: Exception) -> bool:
         """Check if an exception is a rate limit error."""
@@ -122,6 +298,12 @@ class GoogleLLMClient(BaseLLMClient):
     def _execute_generation(self, api_key: str, prompt: str, system: str, 
                           temperature: float, images: list[str] | None) -> str:
         """Execute the actual generation with a specific API key."""
+        response = self._execute_generation_detailed(api_key, prompt, system, temperature, images)
+        return response.text
+    
+    def _execute_generation_detailed(self, api_key: str, prompt: str, system: str, 
+                                   temperature: float, images: list[str] | None) -> GeminiResponse:
+        """Execute generation and return comprehensive response with all metadata."""
         # Configure the API key for this request
         genai.configure(api_key=api_key)
         
@@ -158,21 +340,39 @@ class GoogleLLMClient(BaseLLMClient):
             safety_settings=safety_settings,
         )
 
-        if response.parts:
-            return response.text
-        else:
-            finish_reason = "Unknown"
-            if response.prompt_feedback:
-                finish_reason = response.prompt_feedback.block_reason
-            raise Exception(f"Response was blocked due to: {finish_reason}")
+        # Create comprehensive response object
+        gemini_response = GeminiResponse.from_response(response)
+        
+        # Check if response was blocked with clear, simple error messages
+        if gemini_response.blocked or not response.parts:
+            message = self._get_user_friendly_block_message(gemini_response)
+            raise GeminiContentBlockedException(message, gemini_response)
+            
+        return gemini_response
 
-    def _generate(
+    def generate_detailed(
         self,
         prompt: str,
         system: str = "",
         temperature: float = 0.0,
         images: list[str] | None = None,
-    ) -> str:
+    ) -> GeminiResponse:
+        """Generate response with comprehensive metadata including usage, safety ratings, and finish reasons.
+        
+        Args:
+            prompt (str): The prompt text.
+            system (str, optional): System message or instruction. Defaults to "".
+            temperature (float, optional): Sampling temperature. Defaults to 0.0.
+            images (list[str] | None, optional): Optional list of base64 encoded images.
+            
+        Returns:
+            GeminiResponse: Comprehensive response with text, usage stats, safety ratings, etc.
+            
+        Raises:
+            ValueError: If prompt is empty or model name is not set.
+            RateLimitExceeded: If rate limits are exceeded across all API keys.
+            Exception: If generation fails or content is blocked.
+        """
         if not prompt or len(prompt) == 0:
             raise ValueError("Prompt must not be empty for GoogleLLMClient.")
         if not self.model:
@@ -181,15 +381,26 @@ class GoogleLLMClient(BaseLLMClient):
         # If we have key rotation enabled, use it
         if self._key_rotation_manager:
             return self._key_rotation_manager.execute_with_rotation(
-                operation=lambda key: self._execute_generation(key, prompt, system, temperature, images),
+                operation=lambda key: self._execute_generation_detailed(key, prompt, system, temperature, images),
                 is_rate_limit_error=self._is_rate_limit_error
             )
         
-        # Single key mode - original behavior with improved error handling
+        # Single key mode
         try:
-            return self._execute_generation(self._keys[0], prompt, system, temperature, images)
+            return self._execute_generation_detailed(self._keys[0], prompt, system, temperature, images)
         except Exception as e:
             # Check for rate limit errors (HTTP 429)
             if self._is_rate_limit_error(e):
                 raise RateLimitExceeded(f"Google API rate limit exceeded: {e}")
-            raise Exception(f"An error occurred during generation: {e}")
+            raise e
+    
+    def _generate(
+        self,
+        prompt: str,
+        system: str = "",
+        temperature: float = 0.0,
+        images: list[str] | None = None,
+    ) -> str:
+        """Generate text response (backward compatibility). Use generate_detailed() for full metadata."""
+        response = self.generate_detailed(prompt, system, temperature, images)
+        return response.text
