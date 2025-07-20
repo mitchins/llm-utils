@@ -4,7 +4,7 @@ This document provides guidance for agents (both human and automated) on how to 
 
 ## Core Repository Structure
 
-- **`llm_utils/interfacing/`**: LLM client implementations, including the base client with retry logic and the Google Gemini client with key rotation.
+- **`llm_utils/clients/`**: LLM client implementations, including the base client with retry logic and the Google Gemini client with key rotation.
 - **`llm_utils/training/`**: Scripts for model training and data preparation.
 - **`tests/`**: Unit and integration tests. New features should be accompanied by corresponding tests.
 

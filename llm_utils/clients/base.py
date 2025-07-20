@@ -28,7 +28,7 @@ class BaseLLMClient(ABC):
             retry_interval (int): Seconds to wait between retries.
         """
         self.model = model_name
-        self.system_prompt = system_prompt or "You are a helpful assistant."
+        self.system_prompt = system_prompt or "You are a helpful and concise assistant."
         self.max_retries = max_retries
         self.retry_interval = retry_interval
 

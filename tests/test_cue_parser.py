@@ -1,7 +1,7 @@
 
 
 import unittest
-from llm_utils.interfacing.cue_parser import CueParser
+from llm_utils.parsers.cue_parser import CueParser
 
 class TestCueParser(unittest.TestCase):
 

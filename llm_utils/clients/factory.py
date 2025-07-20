@@ -1,7 +1,7 @@
 from enum import Enum
-from llm_utils.interfacing.google_genai_client import GoogleLLMClient
-from llm_utils.interfacing.llm_request import OpenAILikeLLMClient
-from llm_utils.interfacing.base_client import BaseLLMClient
+from llm_utils.clients.google_genai_client import GoogleLLMClient
+from llm_utils.clients.openai_client import OpenAILikeLLMClient
+from llm_utils.clients.base import BaseLLMClient
 
 
 class LLMProvider(str, Enum):
