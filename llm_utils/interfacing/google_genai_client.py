@@ -164,7 +164,7 @@ class GoogleLLMClient(BaseLLMClient):
             finish_reason = "Unknown"
             if response.prompt_feedback:
                 finish_reason = response.prompt_feedback.block_reason
-            return f"Response was blocked due to: {finish_reason}"
+            raise Exception(f"Response was blocked due to: {finish_reason}")
 
     def _generate(
         self,
