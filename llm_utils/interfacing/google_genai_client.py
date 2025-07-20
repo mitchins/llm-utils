@@ -1,4 +1,3 @@
-import os
 import logging
 import base64
 from typing import Union, List, Optional, Dict, Any
@@ -6,16 +5,24 @@ from dataclasses import dataclass
 from llm_utils.interfacing.base_client import BaseLLMClient, RateLimitExceeded
 from llm_utils.interfacing.key_rotation import KeyRotationManager
 
+logger = logging.getLogger(__name__)
+
+
+def _extract_enum_value(obj, fallback_value: str = "UNKNOWN") -> str:
+    """Extract string value from enum or return fallback."""
+    if obj is None:
+        return fallback_value
+    if hasattr(obj, 'name'):
+        return str(obj.name)
+    return str(obj)
+
+
 try:
     import google.generativeai as genai
     from google.generativeai import types
     from google.generativeai.types import HarmCategory, HarmBlockThreshold
 except ImportError:
-    # Warn only
-    logger = logging.getLogger(__name__)
     logger.warning("Google Generative AI library is not installed. Some features may be unavailable.")
-
-logger = logging.getLogger(__name__)
 
 
 class GeminiContentBlockedException(Exception):
@@ -28,6 +35,21 @@ class GeminiContentBlockedException(Exception):
         Args:
             message (str): Clear, user-friendly explanation of why content was blocked
             response (GeminiResponse, optional): Full response object for detailed analysis
+        """
+        super().__init__(message)
+        self.response = response
+
+
+class GeminiTokenLimitException(Exception):
+    """Raised when Gemini hits token limits during generation."""
+    
+    def __init__(self, message: str, response: 'GeminiResponse' = None):
+        """
+        Initialize with a clear message and optional detailed response for debugging.
+        
+        Args:
+            message (str): Clear, user-friendly explanation of the token limit issue
+            response (GeminiResponse, optional): Full response object with usage data
         """
         super().__init__(message)
         self.response = response
@@ -63,8 +85,8 @@ class GeminiSafetyRating:
     def from_response(cls, rating) -> 'GeminiSafetyRating':
         """Create from Gemini response safety rating."""
         return cls(
-            category=str(rating.category.name) if hasattr(rating.category, 'name') else str(rating.category),
-            probability=str(rating.probability.name) if hasattr(rating.probability, 'name') else str(rating.probability),
+            category=_extract_enum_value(rating.category),
+            probability=_extract_enum_value(rating.probability),
             blocked=getattr(rating, 'blocked', False)
         )
 
@@ -91,7 +113,17 @@ class GeminiCandidate:
         
         finish_reason = None
         if hasattr(candidate, 'finish_reason'):
-            finish_reason = str(candidate.finish_reason.name) if hasattr(candidate.finish_reason, 'name') else str(candidate.finish_reason)
+            # Handle both enum and raw values
+            if hasattr(candidate.finish_reason, 'name'):
+                finish_reason = _extract_enum_value(candidate.finish_reason)
+            else:
+                # Convert integer codes to names
+                reason_code = str(candidate.finish_reason)
+                finish_reason = {
+                    "1": "STOP",
+                    "2": "MAX_TOKENS", 
+                    "3": "SAFETY"
+                }.get(reason_code, str(candidate.finish_reason))
         
         safety_ratings = []
         if hasattr(candidate, 'safety_ratings') and candidate.safety_ratings:
@@ -122,12 +154,16 @@ class GeminiResponse:
     @classmethod
     def from_response(cls, response) -> 'GeminiResponse':
         """Create comprehensive response from Gemini API response."""
-        # Extract primary text
+        # Extract primary text safely (avoid response.text accessor when no parts)
         text = ""
-        if hasattr(response, 'text') and response.text:
-            text = response.text
-        elif hasattr(response, 'parts') and response.parts:
-            text = response.parts[0].text if response.parts[0].text else ""
+        try:
+            if hasattr(response, 'parts') and response.parts:
+                text = response.parts[0].text if response.parts[0].text else ""
+            elif hasattr(response, 'text'):
+                text = response.text or ""
+        except (ValueError, AttributeError):
+            # Handle cases where response.text accessor fails due to no parts
+            text = ""
         
         # Extract candidates with all metadata
         candidates = []
@@ -153,7 +189,7 @@ class GeminiResponse:
             
             if hasattr(response.prompt_feedback, 'block_reason') and response.prompt_feedback.block_reason:
                 blocked = True
-                block_reason = str(response.prompt_feedback.block_reason.name) if hasattr(response.prompt_feedback.block_reason, 'name') else str(response.prompt_feedback.block_reason)
+                block_reason = _extract_enum_value(response.prompt_feedback.block_reason)
             
             if hasattr(response.prompt_feedback, 'safety_ratings') and response.prompt_feedback.safety_ratings:
                 prompt_feedback['safety_ratings'] = [
@@ -193,30 +229,39 @@ class GoogleLLMClient(BaseLLMClient):
     4. Retries the entire key rotation cycle up to `max_retries` times
     5. Raises RateLimitExceeded if all retries are exhausted
     
+    **Token Limits**:
+    - max_output_tokens controls RESPONSE length only (default: 65,535 tokens)
+    - Input context window is separate and model-dependent:
+      * Gemini 2.5 Pro: 1,048,576 input tokens (1M+)
+      * Gemini 1.5 Pro/Flash: 1,000,000+ input tokens
+      * Gemini 1.0 Pro: ~32,000 input tokens
+    - Large inputs (70K+ tokens) are fine if using modern Gemini models
+    
     **Thread Safety**: 
     Each instance maintains its own key rotation state. Multiple instances
     can safely use the same or overlapping key sets without interference.
     
     Example:
         >>> # Single key usage
-        >>> client = GoogleLLMClient(model="gemini-pro", api_key="your-key")
+        >>> client = GoogleLLMClient(model="gemini-2.5-pro", api_key="your-key")
         >>> response = client.generate("Hello world")
         
-        >>> # Multiple keys for rotation
+        >>> # Multiple keys for rotation with custom output limit
         >>> client = GoogleLLMClient(
-        ...     model="gemini-pro", 
+        ...     model="gemini-2.5-pro", 
         ...     api_key=["key1", "key2", "key3"],
+        ...     max_output_tokens=32000,  # Limit response size, not input
         ...     max_retries=2,
         ...     retry_interval=10
         ... )
-        >>> response = client.generate("Hello world")
+        >>> response = client.generate("Very long input prompt...")
     """
 
     def __init__(self,
                  model: str,
                  api_key: Union[str, List[str]],
                  timeout: int = 60,
-                 max_output_tokens: int = 4096,
+                 max_output_tokens: int = 65535,
                  max_retries: int = 1,
                  retry_interval: int = 5,
                  **kwargs):
@@ -230,7 +275,10 @@ class GoogleLLMClient(BaseLLMClient):
                 When multiple keys are provided, the client will automatically rotate
                 through them on rate limit errors to maximize uptime.
             timeout (int): Request timeout in seconds. Defaults to 60.
-            max_output_tokens (int): The maximum number of tokens to generate. Defaults to 4096.
+            max_output_tokens (int): The maximum number of tokens to generate in the response.
+                This controls OUTPUT length only, not input context window. Defaults to 65535
+                (Gemini 2.5 Pro's maximum). The model's input context window is separate and
+                much larger (1M+ tokens for Gemini 2.5 Pro).
             max_retries (int): The maximum number of times to retry the request
                 after all API keys have been exhausted. Defaults to 1.
             retry_interval (int): The number of seconds to wait between retries. Defaults to 5.
@@ -272,23 +320,47 @@ class GoogleLLMClient(BaseLLMClient):
         """Convert technical block reasons into clear, actionable user messages."""
         block_reason = response.block_reason
         
+        # Build base message
         if not block_reason:
-            return "Content generation was blocked (no specific reason provided)"
-        
-        # Convert technical reasons to user-friendly messages
-        reason_lower = str(block_reason).lower()
-        
-        if "safety" in reason_lower or "harm" in reason_lower:
-            return "Content was blocked due to safety guidelines"
-        elif "recitation" in reason_lower:
-            return "Content was blocked due to potential copyright concerns"
-        elif "other" in reason_lower:
-            return "Content was blocked for policy reasons"
-        elif "prohibited" in reason_lower:
-            return "Content violates usage policies"
+            base_message = "Content generation was blocked (no specific reason provided)"
         else:
-            # Fallback for unknown reasons
-            return f"Content was blocked: {block_reason}"
+            # Convert technical reasons to user-friendly messages
+            reason_lower = str(block_reason).lower()
+            
+            if "safety" in reason_lower or "harm" in reason_lower:
+                base_message = "Content was blocked due to safety guidelines"
+            elif "recitation" in reason_lower:
+                base_message = "Content was blocked due to potential copyright concerns"
+            elif "other" in reason_lower:
+                base_message = "Content was blocked for policy reasons"
+            elif "prohibited" in reason_lower:
+                base_message = "Content violates usage policies"
+            else:
+                # Fallback for unknown reasons
+                base_message = f"Content was blocked: {block_reason}"
+        
+        # Add input token count if available
+        if response.usage_metadata and response.usage_metadata.input_tokens is not None:
+            base_message += f" (input: {response.usage_metadata.input_tokens} tokens)"
+        
+        return base_message
+    
+    def _get_token_limit_message(self, response: 'GeminiResponse') -> str:
+        """Create clear message for token limit scenarios."""
+        base_message = "Response truncated due to token limit"
+        
+        # Add token usage information if available
+        if response.usage_metadata:
+            if response.usage_metadata.input_tokens is not None:
+                base_message += f" (input: {response.usage_metadata.input_tokens} tokens"
+                if response.usage_metadata.output_tokens is not None:
+                    base_message += f", output: {response.usage_metadata.output_tokens} tokens"
+                if response.usage_metadata.total_tokens is not None:
+                    base_message += f", total: {response.usage_metadata.total_tokens} tokens"
+                base_message += ")"
+        
+        base_message += " - consider reducing input size or increasing max_tokens"
+        return base_message
 
     def _is_rate_limit_error(self, exception: Exception) -> bool:
         """Check if an exception is a rate limit error."""
@@ -297,7 +369,7 @@ class GoogleLLMClient(BaseLLMClient):
 
     def _execute_generation(self, api_key: str, prompt: str, system: str, 
                           temperature: float, images: list[str] | None) -> str:
-        """Execute the actual generation with a specific API key."""
+        """Execute generation and return text only (backward compatibility)."""
         response = self._execute_generation_detailed(api_key, prompt, system, temperature, images)
         return response.text
     
@@ -343,8 +415,20 @@ class GoogleLLMClient(BaseLLMClient):
         # Create comprehensive response object
         gemini_response = GeminiResponse.from_response(response)
         
-        # Check if response was blocked with clear, simple error messages
-        if gemini_response.blocked or not response.parts:
+        # Check for different types of issues
+        if gemini_response.blocked:
+            # Content was blocked due to safety filters
+            message = self._get_user_friendly_block_message(gemini_response)
+            raise GeminiContentBlockedException(message, gemini_response)
+        elif not response.parts:
+            # No content parts - check if it's due to token limits
+            if (gemini_response.candidates and 
+                len(gemini_response.candidates) > 0 and
+                gemini_response.candidates[0].finish_reason == "MAX_TOKENS"):
+                message = self._get_token_limit_message(gemini_response)
+                raise GeminiTokenLimitException(message, gemini_response)
+            
+            # Some other reason for no parts
             message = self._get_user_friendly_block_message(gemini_response)
             raise GeminiContentBlockedException(message, gemini_response)
             

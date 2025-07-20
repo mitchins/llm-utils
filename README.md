@@ -72,7 +72,11 @@ print(response)
 For production environments, provide multiple API keys to enable automatic rotation on rate limits:
 
 ```python
-from llm_utils.interfacing.google_genai_client import GoogleLLMClient, GeminiContentBlockedException
+from llm_utils.interfacing.google_genai_client import (
+    GoogleLLMClient, 
+    GeminiContentBlockedException, 
+    GeminiTokenLimitException
+)
 
 # Multiple API keys for rotation
 client = GoogleLLMClient(
@@ -95,8 +99,14 @@ try:
     print(f"Finish reason: {detailed_response.candidates[0].finish_reason}")
     
 except GeminiContentBlockedException as e:
-    print(f"Content blocked: {e}")  # Clear, simple message
-    # Full details available in e.response if needed for debugging
+    print(f"Content blocked: {e}")  # Clear message with token count
+    # Example: "Content was blocked due to safety guidelines (input: 150 tokens)"
+    
+except GeminiTokenLimitException as e:
+    print(f"Token limit exceeded: {e}")  # Clear message with usage details
+    # Example: "Response truncated due to token limit (input: 2000 tokens, output: 4096 tokens, total: 6096 tokens) - consider reducing input size or increasing max_tokens"
+    
+# Full details available in e.response for both exception types if needed for debugging
 ```
 
 **Key Rotation Behavior**: When rate limits are encountered, the client automatically rotates to the next available API key. If all keys are exhausted, it waits `retry_interval` seconds before retrying the entire rotation cycle.
@@ -106,6 +116,14 @@ except GeminiContentBlockedException as e:
 - **Safety Ratings**: Per-category safety assessments 
 - **Finish Reasons**: Why generation stopped (STOP, MAX_TOKENS, SAFETY, etc.)
 - **Multiple Candidates**: Access all response candidates with their metadata
+
+**Important: Token Limits vs Context Windows**:
+- `max_output_tokens` controls **response length only** (default: 65,535 tokens)
+- **Input context window** is separate and much larger:
+  - Gemini 2.5 Pro: 1,048,576 input tokens (1M+)
+  - Gemini 1.5 Pro/Flash: 1,000,000+ input tokens
+  - Gemini 1.0 Pro: ~32,000 input tokens
+- Large inputs (70K+ tokens) are supported by modern Gemini models
 
 ## Contributing
 
