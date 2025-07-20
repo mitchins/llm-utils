@@ -1,7 +1,7 @@
 import json
 from typing import Iterable, Mapping, Tuple, Union, List, Dict, Callable, Optional
 
-from .base_client import BaseLLMClient, LLMError
+from .base import BaseLLMClient, LLMError
 
 
 class MockLLMClient(BaseLLMClient):
@@ -52,7 +52,7 @@ class MockLLMClient(BaseLLMClient):
     def _make_key(model: str, system: str, prompt: str, temperature: float) -> Tuple[str, str, str, float]:
         return model, system, prompt, temperature
 
-    def generate(
+    def _generate(
         self,
         prompt: str,
         system: str = "",

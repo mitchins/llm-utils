@@ -1,11 +1,11 @@
 import pytest
 from unittest.mock import Mock, call
-from llm_utils.interfacing.key_rotation import (
+from llm_utils.clients.key_rotation import (
     KeyRotationManager, 
     CircularRotationStrategy,
     KeyRotationStrategy
 )
-from llm_utils.interfacing.base_client import RateLimitExceeded
+from llm_utils.clients.base import RateLimitExceeded
 
 
 class MockStrategy(KeyRotationStrategy):

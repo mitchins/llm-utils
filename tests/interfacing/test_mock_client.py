@@ -1,7 +1,7 @@
 import json
 import pytest
-from llm_utils.interfacing.mock_client import MockLLMClient
-from llm_utils.interfacing.base_client import LLMError
+from llm_utils.clients.mock_client import MockLLMClient
+from llm_utils.clients.base import LLMError
 
 IMG_B64 = "AAA="
 

@@ -3,8 +3,8 @@ import types
 import pytest
 from unittest.mock import Mock, patch
 import google.generativeai as genai
-from llm_utils.interfacing.google_genai_client import GoogleLLMClient
-from llm_utils.interfacing.base_client import RateLimitExceeded
+from llm_utils.clients.google_genai_client import GoogleLLMClient
+from llm_utils.clients.base import RateLimitExceeded
 
 
 class DummyResponse:

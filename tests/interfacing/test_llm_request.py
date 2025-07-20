@@ -5,8 +5,8 @@ import pytest
 import os
 
 IMG_B64 = "AAA="
-from llm_utils.interfacing.llm_request import OpenAILikeLLMClient
-from llm_utils.interfacing.llm_request import (
+from llm_utils.clients.openai_client import OpenAILikeLLMClient
+from llm_utils.clients.openai_client import (
     LLMTimeoutError,
     LLMConnectionError,
     LLMModelNotFoundError,

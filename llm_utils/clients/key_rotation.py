@@ -150,7 +150,7 @@ class KeyRotationManager:
             RateLimitExceeded: If all keys are exhausted
             Any other exception from the operation
         """
-        from .base_client import RateLimitExceeded
+        from .base import RateLimitExceeded
         
         # Reset for fresh attempt
         self.reset_rotation()

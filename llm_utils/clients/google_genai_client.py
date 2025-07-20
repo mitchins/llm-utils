@@ -2,8 +2,8 @@ import logging
 import base64
 from typing import Union, List, Optional, Dict, Any
 from dataclasses import dataclass
-from llm_utils.interfacing.base_client import BaseLLMClient, RateLimitExceeded
-from llm_utils.interfacing.key_rotation import KeyRotationManager
+from llm_utils.clients.base import BaseLLMClient, RateLimitExceeded
+from llm_utils.clients.key_rotation import KeyRotationManager
 
 logger = logging.getLogger(__name__)
 

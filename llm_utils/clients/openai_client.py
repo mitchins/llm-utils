@@ -1,6 +1,6 @@
 import httpx
 import os
-from .base_client import BaseLLMClient, LLMError, RateLimitExceeded
+from .base import BaseLLMClient, LLMError, RateLimitExceeded
 
 class LLMTimeoutError(LLMError):
     """Raised when the LLM request times out."""
@@ -63,8 +63,12 @@ class OpenAILikeLLMClient(BaseLLMClient):
             max_retries (int): The maximum number of retries on rate limit errors.
             retry_interval (int): The number of seconds to wait between retries.
         """
+        system_prompt = system_prompt or os.getenv("LLM_SYSTEM_PROMPT") or "You are a helpful and concise assistant."
+        model = model or os.getenv("LLM_MODEL") or DEFAULT_MODEL
+        base_url = base_url or os.getenv("LLM_BASE_URL") or DEFAULT_BASE_URL
+
         super().__init__(model, system_prompt=system_prompt, max_retries=max_retries, retry_interval=retry_interval)
-        self.base_url = base_url or DEFAULT_BASE_URL
+        self.base_url = base_url
         self.timeout = timeout
         self.temperature = temperature
         self.max_tokens = max_tokens

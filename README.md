@@ -53,7 +53,7 @@ The `GoogleLLMClient` provides access to Google's Gemini models and includes bui
 #### Single API Key Usage
 
 ```python
-from llm_utils.interfacing.google_genai_client import GoogleLLMClient
+from llm_utils.clients.google_genai_client import GoogleLLMClient
 
 # Single API key
 client = GoogleLLMClient(
@@ -72,7 +72,7 @@ print(response)
 For production environments, provide multiple API keys to enable automatic rotation on rate limits:
 
 ```python
-from llm_utils.interfacing.google_genai_client import (
+from llm_utils.clients.google_genai_client import (
     GoogleLLMClient, 
     GeminiContentBlockedException, 
     GeminiTokenLimitException
@@ -146,7 +146,7 @@ Contributions are welcome! To get started:
 
 The repository is organized into the following key areas:
 
-- **`llm_utils/interfacing/`**: Contains the `BaseLLMClient`, `GoogleLLMClient`, and `OpenAILikeLLMClient` for interacting with LLMs.
+- **`llm_utils/clients/`**: Contains the `BaseLLMClient`, `GoogleLLMClient`, and `OpenAILikeLLMClient` for interacting with LLMs.
 - **`llm_utils/training/`**: Includes scripts for fine-tuning models like T5 and BERT.
 - **`llm_utils/data/`**: Provides tools for dataset analysis and preparation.
 - **`tests/`**: Contains unit and integration tests for the library.

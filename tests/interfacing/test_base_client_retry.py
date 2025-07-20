@@ -1,7 +1,7 @@
 import pytest
 import time
 from unittest.mock import MagicMock, patch
-from llm_utils.interfacing.base_client import BaseLLMClient, RateLimitExceeded
+from llm_utils.clients.base import BaseLLMClient, RateLimitExceeded
 
 # A concrete implementation of the abstract BaseLLMClient for testing purposes
 class ConcreteLLMClient(BaseLLMClient):

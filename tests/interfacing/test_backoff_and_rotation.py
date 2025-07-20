@@ -1,13 +1,13 @@
 import pytest
 from unittest.mock import patch, MagicMock
-from llm_utils.interfacing.google_genai_client import GoogleLLMClient, RateLimitExceeded
+from llm_utils.clients.google_genai_client import GoogleLLMClient, RateLimitExceeded
 
 @pytest.fixture
 def mock_genai_in_client(monkeypatch):
     """Mocks the genai library inside the google_genai_client module."""
     mock_genai = MagicMock()
     # Patch 'genai' in the module where it is imported and used
-    monkeypatch.setattr("llm_utils.interfacing.google_genai_client.genai", mock_genai)
+    monkeypatch.setattr("llm_utils.clients.google_genai_client.genai", mock_genai)
     return mock_genai
 
 def test_key_rotation_with_backoff_and_retry(mock_genai_in_client):
