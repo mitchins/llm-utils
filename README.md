@@ -72,6 +72,8 @@ print(response)
 For production environments, provide multiple API keys to enable automatic rotation on rate limits:
 
 ```python
+from llm_utils.interfacing.google_genai_client import GoogleLLMClient, GeminiContentBlockedException
+
 # Multiple API keys for rotation
 client = GoogleLLMClient(
     model="gemini-pro",
@@ -80,11 +82,30 @@ client = GoogleLLMClient(
     retry_interval=5
 )
 
-response = client.generate("What is the capital of France?")
-print(response)
+try:
+    # Basic text response (backward compatibility)
+    response = client.generate("What is the capital of France?")
+    print(response)  # Just the text
+    
+    # Detailed response with full metadata
+    detailed_response = client.generate_detailed("What is the capital of France?")
+    print(f"Text: {detailed_response.text}")
+    print(f"Input tokens: {detailed_response.usage_metadata.input_tokens}")
+    print(f"Output tokens: {detailed_response.usage_metadata.output_tokens}")
+    print(f"Finish reason: {detailed_response.candidates[0].finish_reason}")
+    
+except GeminiContentBlockedException as e:
+    print(f"Content blocked: {e}")  # Clear, simple message
+    # Full details available in e.response if needed for debugging
 ```
 
 **Key Rotation Behavior**: When rate limits are encountered, the client automatically rotates to the next available API key. If all keys are exhausted, it waits `retry_interval` seconds before retrying the entire rotation cycle.
+
+**Response Metadata**: Use `generate_detailed()` to access comprehensive response information including:
+- **Usage Statistics**: Token counts for cost tracking and optimization
+- **Safety Ratings**: Per-category safety assessments 
+- **Finish Reasons**: Why generation stopped (STOP, MAX_TOKENS, SAFETY, etc.)
+- **Multiple Candidates**: Access all response candidates with their metadata
 
 ## Contributing
 
