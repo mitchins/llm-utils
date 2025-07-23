@@ -52,29 +52,38 @@ class MockLLMClient(BaseLLMClient):
         on_request: Optional[Callable] = None,
     ) -> None:
         super().__init__(model_name)
-        parsed = self._parse_responses(responses)
-        if isinstance(parsed, Exception):
-            self._only_error = parsed
-            self._responses = {}
-        else:
-            self._only_error = None
-            self._responses = self._build_response_map(parsed)
         self._on_request = on_request
+        self.set_responses(responses)
 
     def _build_response_map(self, entries):
         """Build a dict mapping request keys to responses."""
         resp_map = {}
         for entry in entries:  # type: ignore
-            model = entry.get("model", self.model)
-            system = entry.get("system", "")
+            model = entry.get("model", None)
+            system = entry.get("system", None)
             prompt = entry.get("prompt")
-            temperature = float(entry.get("temperature", 0.0))
+            temperature = entry.get("temperature", None)
+            if temperature is not None:
+                temperature = float(temperature)
             resp = entry.get("response")
-            if prompt is None or resp is None:
-                raise ValueError("Each entry must include 'prompt' and 'response'")
+            if resp is None:
+                raise ValueError("Each entry must include 'response'")
             key = self._make_key(model, system, prompt, temperature)
             resp_map[key] = resp
         return resp_map
+
+    def set_responses(self, entries: Union[List[Mapping[str, Union[str, float]]], Exception, None]) -> None:
+        """
+        Configure the mock: if given an Exception, raise it on generate;
+        otherwise treat entries as a list of mappings with 'prompt' and 'response'.
+        """
+        parsed = self._parse_responses(entries)
+        if isinstance(parsed, Exception):
+            self._only_error = parsed
+            self._response_map = {}
+        else:
+            self._only_error = None
+            self._response_map = self._build_response_map(parsed)
 
     @staticmethod
     def _make_key(model: str, system: str, prompt: str, temperature: float) -> Tuple[str, str, str, float]:
@@ -95,9 +104,16 @@ class MockLLMClient(BaseLLMClient):
             if override is not None:
                 return override
         key = self._make_key(self.model, system, prompt, temperature)
-        if key not in self._responses:
+        # Wildcard match: None in stored key matches any value
+        for stored_key, stored_resp in self._response_map.items():
+            if all(
+                sk is None or sk == k
+                for sk, k in zip(stored_key, key)
+            ):
+                response = stored_resp
+                break
+        else:
             raise LLMError(f"No mock response for request: {key}")
-        response = self._responses[key]
         if isinstance(response, Exception):
             raise response
         return response

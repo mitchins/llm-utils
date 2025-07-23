@@ -65,3 +65,58 @@ def test_on_request_override_and_none_fallback():
     data = [{"model":"m", "system":"t", "prompt":"z", "temperature":2.0, "response":"mapped"}]
     client2 = MockLLMClient(data, model_name="m", on_request=lambda *args, **kwargs: None)
     assert client2.generate("z", system="t", temperature=2.0) == "mapped"
+
+def test_wildcard_prompt_only():
+    # Entry only specifies prompt and response; model, system, temperature should act as wildcards
+    responses = [
+        {"prompt": "hello", "response": "world"}
+    ]
+    client = MockLLMClient(responses, model_name="any-model")
+    # Any system and temperature should match
+    assert client.generate("hello", system="sys1", temperature=0.1) == "world"
+    assert client.generate("hello", system="different", temperature=0.9) == "world"
+
+def test_wildcard_system_only():
+    # Entry specifies system and prompt; model and temperature wildcards
+    responses = [
+        {"system": "SYS", "prompt": "foo", "response": "bar"}
+    ]
+    client = MockLLMClient(responses, model_name="mdl")
+    assert client.generate("foo", system="SYS", temperature=0.0) == "bar"
+    # Different model still matches
+    client2 = MockLLMClient(responses, model_name="other")
+    assert client2.generate("foo", system="SYS", temperature=1.0) == "bar"
+
+def test_wildcard_temperature_only():
+    # Entry specifies prompt and temperature; model and system wildcards
+    responses = [
+        {"prompt": "baz", "temperature": 0.5, "response": "qux"}
+    ]
+    client = MockLLMClient(responses, model_name="mdl", on_request=None)
+    # Matching temperature
+    assert client.generate("baz", system="", temperature=0.5) == "qux"
+    # Different system and model but same temperature should match
+    client3 = MockLLMClient(responses, model_name="x", on_request=None)
+    assert client3.generate("baz", system="any", temperature=0.5) == "qux"
+
+def test_no_match_raises_with_wildcards():
+    # Entry wildcard on prompt only, but wrong prompt should raise
+    responses = [
+        {"prompt": "exact", "response": "value"}
+    ]
+    client = MockLLMClient(responses, model_name="mdl")
+    with pytest.raises(LLMError):
+        client.generate("other", system="SYS", temperature=0.5)
+
+def test_wildcard_model_only():
+    # Entry specifies only model and response; other fields act as wildcards
+    responses = [
+        {"model": "MOD", "response": "ok"}
+    ]
+    # Matching model
+    client = MockLLMClient(responses, model_name="MOD")
+    assert client.generate("any", system="sys", temperature=0.3) == "ok"
+    # Non-matching model should raise
+    client2 = MockLLMClient(responses, model_name="OTHER")
+    with pytest.raises(LLMError):
+        client2.generate("any", system="sys", temperature=0.3)
