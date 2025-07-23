@@ -3,6 +3,11 @@ from typing import Iterable, Mapping, Tuple, Union, List, Dict, Callable, Option
 
 from .base import BaseLLMClient, LLMError
 
+class MockError(LLMError):
+    """Generic mock exception for tests."""
+    def __init__(self, message: str):
+        super().__init__(message)
+
 
 class MockLLMClient(BaseLLMClient):
     """A simple mock client that returns predefined responses.
@@ -25,28 +30,51 @@ class MockLLMClient(BaseLLMClient):
         ]
     """
 
+    def _parse_responses(self, responses):
+        """Normalize responses: load JSON, default to list, or single Exception."""
+        # Load from JSON file path
+        if isinstance(responses, str):
+            with open(responses, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        # Default to empty list
+        if responses is None:
+            return []
+        # Single-exception sentinel
+        if isinstance(responses, list) and responses and isinstance(responses[0], Exception):
+            return responses[0]
+        # Otherwise assume iterable of mappings
+        return list(responses)
+
     def __init__(
         self,
-        responses: Union[str, Iterable[Mapping[str, Union[str, float]]]],
+        responses: Union[str, Iterable[Mapping[str, Union[str, float]]]] = None,
         model_name: str | None = None,
         on_request: Optional[Callable] = None,
     ) -> None:
         super().__init__(model_name)
-        if isinstance(responses, str):
-            with open(responses, "r", encoding="utf-8") as fh:
-                responses = json.load(fh)
-        self._responses: Dict[Tuple[str, str, str, float], str] = {}
-        for entry in responses:  # type: ignore[assignment]
+        parsed = self._parse_responses(responses)
+        if isinstance(parsed, Exception):
+            self._only_error = parsed
+            self._responses = {}
+        else:
+            self._only_error = None
+            self._responses = self._build_response_map(parsed)
+        self._on_request = on_request
+
+    def _build_response_map(self, entries):
+        """Build a dict mapping request keys to responses."""
+        resp_map = {}
+        for entry in entries:  # type: ignore
             model = entry.get("model", self.model)
             system = entry.get("system", "")
             prompt = entry.get("prompt")
             temperature = float(entry.get("temperature", 0.0))
-            response = entry.get("response")
-            if prompt is None or response is None:
+            resp = entry.get("response")
+            if prompt is None or resp is None:
                 raise ValueError("Each entry must include 'prompt' and 'response'")
             key = self._make_key(model, system, prompt, temperature)
-            self._responses[key] = response
-        self._on_request = on_request
+            resp_map[key] = resp
+        return resp_map
 
     @staticmethod
     def _make_key(model: str, system: str, prompt: str, temperature: float) -> Tuple[str, str, str, float]:
@@ -59,6 +87,9 @@ class MockLLMClient(BaseLLMClient):
         temperature: float = 0.0,
         images: list[str] | None = None,
     ) -> str:
+        # If initialized with a single exception, raise it immediately
+        if getattr(self, "_only_error", None):
+            raise self._only_error
         if self._on_request:
             override = self._on_request(prompt=prompt, system=system, temperature=temperature, images=images)
             if override is not None:
@@ -66,7 +97,10 @@ class MockLLMClient(BaseLLMClient):
         key = self._make_key(self.model, system, prompt, temperature)
         if key not in self._responses:
             raise LLMError(f"No mock response for request: {key}")
-        return self._responses[key]
+        response = self._responses[key]
+        if isinstance(response, Exception):
+            raise response
+        return response
 
     def prompt(
         self,
