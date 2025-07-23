@@ -47,7 +47,7 @@ class OpenAILikeLLMClient(BaseLLMClient):
         max_retries (int): The maximum number of retries on rate limit errors.
         retry_interval (int): The number of seconds to wait between retries.
     """
-    def __init__(self, model=None, base_url=None, timeout=60, system_prompt=None, temperature=0.7, max_tokens=1024, repetition_penalty=1.1, client=None, max_retries=1, retry_interval=5):
+    def __init__(self, model=None, base_url=None, timeout=60, system_prompt=None, temperature=0.7, max_tokens=1024, repetition_penalty=1.1, client=None, max_retries=1, retry_interval=5, api_key=None):
         """
         Initializes the OpenAILikeLLMClient.
 
