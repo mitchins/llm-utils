@@ -2,7 +2,7 @@ import logging
 import base64
 from typing import Union, List, Optional, Dict, Any
 from dataclasses import dataclass
-from llm_utils.clients.base import BaseLLMClient, RateLimitExceeded
+from llm_utils.clients.base import BaseLLMClient, LLMError, RateLimitExceeded
 from llm_utils.clients.key_rotation import KeyRotationManager
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ except ImportError:
     logger.warning("Google Generative AI library is not installed. Some features may be unavailable.")
 
 
-class GeminiContentBlockedException(Exception):
+class GeminiContentBlockedException(LLMError):
     """Raised when Gemini blocks content due to safety filters."""
     
     def __init__(self, message: str, response: 'GeminiResponse' = None):
@@ -40,7 +40,7 @@ class GeminiContentBlockedException(Exception):
         self.response = response
 
 
-class GeminiTokenLimitException(Exception):
+class GeminiTokenLimitException(LLMError):
     """Raised when Gemini hits token limits during generation."""
     
     def __init__(self, message: str, response: 'GeminiResponse' = None):

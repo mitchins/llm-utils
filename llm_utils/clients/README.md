@@ -4,11 +4,11 @@ This directory contains the core clients for interacting with Large Language Mod
 
 ## Core Components
 
-- **`base_client.py`**: Defines the `BaseLLMClient`, an abstract base class that provides the foundation for all LLM clients in this library. It includes a built-in retry mechanism to handle rate limit errors, which is inherited by all subclasses.
+- **`base.py`**: Defines the `BaseLLMClient`, an abstract base class that provides the foundation for all LLM clients in this library. It includes a built-in retry mechanism to handle rate limit errors, which is inherited by all subclasses.
 
 - **`google_genai_client.py`**: Implements the `GoogleLLMClient` for interacting with Google's Gemini models. This client features a robust key rotation system that works in tandem with the base client's retry logic to maximize uptime.
 
-- **`llm_request.py`**: Contains the `OpenAILikeLLMClient` for sending requests to any OpenAI-compatible endpoint. It also provides a command-line interface for quick, ad-hoc requests.
+- **`openai_client.py`**: Contains the `OpenAILikeLLMClient` for sending requests to any OpenAI-compatible endpoint. It also provides a command-line interface for quick, ad-hoc requests.
 
 - **`key_rotation.py`**: Implements the `KeyRotationManager`, which is used by the `GoogleLLMClient` to cycle through a list of API keys.
 
