@@ -381,8 +381,8 @@ class GoogleLLMClient(BaseLLMClient):
         
         model_instance = genai.GenerativeModel(
             model_name=self.model,
-            system_instruction=system if system else None,
-            tools=None if reasoning is not False else [],
+            system_instruction=system or None,
+            tools=[] if reasoning is False else None,
         )
 
         generation_config = types.GenerationConfig(
