@@ -9,8 +9,8 @@ class ConcreteLLMClient(BaseLLMClient):
         super().__init__(*args, **kwargs)
         self._generate_mock = MagicMock()
 
-    def _generate(self, prompt: str, system: str = "", temperature: float = 0.0, images: list[str] | None = None) -> str:
-        return self._generate_mock(prompt, system=system, temperature=temperature, images=images)
+    def _generate(self, prompt: str, system: str = "", temperature: float = 0.0, images: list[str] | None = None, reasoning: bool | None = None) -> str:
+        return self._generate_mock(prompt, system=system, temperature=temperature, images=images, reasoning=reasoning)
 
 def test_generate_no_retry_on_success():
     client = ConcreteLLMClient(max_retries=3, retry_interval=1)

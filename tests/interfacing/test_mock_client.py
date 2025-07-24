@@ -36,6 +36,12 @@ def test_unmatched_request_raises():
         client.generate("something")
 
 
+def test_reasoning_not_implemented():
+    client = MockLLMClient([], model_name="none")
+    with pytest.raises(NotImplementedError):
+        client.generate("something", reasoning=True)
+
+
 # Additional tests
 def test_exception_in_responses_raises():
     # If the sole response is an exception, generate should raise it immediately

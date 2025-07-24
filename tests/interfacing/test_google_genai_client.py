@@ -17,15 +17,17 @@ class DummyResponse:
 
 
 class DummyModel:
-    def __init__(self, model_name=None, system_instruction=None):
+    def __init__(self, model_name=None, system_instruction=None, tools=None):
         self.model_name = model_name
         self.system_instruction = system_instruction
+        self.tools = tools
 
     def generate_content(self, contents, generation_config=None, safety_settings=None):
         DummyModel.captured = {
             "contents": contents,
             "generation_config": generation_config,
             "safety_settings": safety_settings,
+            "tools": self.tools,
         }
         return DummyResponse()
 
@@ -45,7 +47,7 @@ class RateLimitErrorString(Exception):
 
 def test_generate_with_images(monkeypatch):
     monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
-    monkeypatch.setattr(genai, "GenerativeModel", lambda model_name, system_instruction=None: DummyModel(model_name, system_instruction))
+    monkeypatch.setattr(genai, "GenerativeModel", lambda model_name, system_instruction=None, tools=None: DummyModel(model_name, system_instruction, tools))
 
     client = GoogleLLMClient(model="gemini", api_key="key")
     result = client.generate("Describe", images=[IMG_B64])
@@ -57,12 +59,31 @@ def test_generate_with_images(monkeypatch):
     assert base64.b64decode(IMG_B64) == captured["contents"][1]["inline_data"]["data"]
 
 
+def test_reasoning_parameter(monkeypatch):
+    monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
+    monkeypatch.setattr(genai, "GenerativeModel", lambda model_name, system_instruction=None, tools=None: DummyModel(model_name, system_instruction, tools))
+
+    client = GoogleLLMClient(model="gemini", api_key="key")
+
+    # Test with reasoning=False
+    client.generate("test prompt", reasoning=False)
+    assert DummyModel.captured["tools"] == []
+
+    # Test with reasoning=True
+    client.generate("test prompt", reasoning=True)
+    assert DummyModel.captured["tools"] is None
+
+    # Test with reasoning=None
+    client.generate("test prompt", reasoning=None)
+    assert DummyModel.captured["tools"] is None
+
+
 def test_rate_limit_exception_with_status_code(monkeypatch):
     """Test that 429 status code raises RateLimitExceeded."""
     monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
     
-    def mock_model_factory(model_name, system_instruction=None):
-        mock_model = DummyModel(model_name, system_instruction)
+    def mock_model_factory(model_name, system_instruction=None, tools=None):
+        mock_model = DummyModel(model_name, system_instruction, tools)
         mock_model.generate_content = lambda *args, **kwargs: (_ for _ in ()).throw(RateLimitError("Rate limit exceeded"))
         return mock_model
     
@@ -80,8 +101,8 @@ def test_rate_limit_exception_with_string_detection(monkeypatch):
     """Test that rate limit string in error message raises RateLimitExceeded."""
     monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
     
-    def mock_model_factory(model_name, system_instruction=None):
-        mock_model = DummyModel(model_name, system_instruction)
+    def mock_model_factory(model_name, system_instruction=None, tools=None):
+        mock_model = DummyModel(model_name, system_instruction, tools)
         mock_model.generate_content = lambda *args, **kwargs: (_ for _ in ()).throw(RateLimitErrorString("API rate limit exceeded"))
         return mock_model
     
@@ -99,8 +120,8 @@ def test_rate_limit_exception_with_429_string(monkeypatch):
     """Test that '429' in error message raises RateLimitExceeded."""
     monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
     
-    def mock_model_factory(model_name, system_instruction=None):
-        mock_model = DummyModel(model_name, system_instruction)
+    def mock_model_factory(model_name, system_instruction=None, tools=None):
+        mock_model = DummyModel(model_name, system_instruction, tools)
         mock_model.generate_content = lambda *args, **kwargs: (_ for _ in ()).throw(Exception("HTTP 429 Error"))
         return mock_model
     
@@ -112,4 +133,3 @@ def test_rate_limit_exception_with_429_string(monkeypatch):
         client.generate("test prompt")
     
     assert "Google API rate limit exceeded" in str(exc_info.value)
-

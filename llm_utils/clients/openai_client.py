@@ -86,7 +86,10 @@ class OpenAILikeLLMClient(BaseLLMClient):
         system: str = "",
         temperature: float = 0.0,
         images: list[str] | None = None,
+        reasoning: bool | None = None,
     ) -> str:
+        if reasoning is not None:
+            raise NotImplementedError("The `reasoning` parameter is not supported by the OpenAI client.")
         if system:
             self.system_prompt = system.strip()
         

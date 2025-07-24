@@ -95,7 +95,10 @@ class MockLLMClient(BaseLLMClient):
         system: str = "",
         temperature: float = 0.0,
         images: list[str] | None = None,
+        reasoning: bool | None = None,
     ) -> str:
+        if reasoning is not None:
+            raise NotImplementedError("The `reasoning` parameter is not supported by the Mock client.")
         # If initialized with a single exception, raise it immediately
         if getattr(self, "_only_error", None):
             raise self._only_error

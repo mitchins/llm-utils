@@ -374,7 +374,7 @@ class GoogleLLMClient(BaseLLMClient):
         return response.text
     
     def _execute_generation_detailed(self, api_key: str, prompt: str, system: str, 
-                                   temperature: float, images: list[str] | None) -> GeminiResponse:
+                                   temperature: float, images: list[str] | None, reasoning: bool | None) -> GeminiResponse:
         """Execute generation and return comprehensive response with all metadata."""
         # Configure the API key for this request
         genai.configure(api_key=api_key)
@@ -382,6 +382,7 @@ class GoogleLLMClient(BaseLLMClient):
         model_instance = genai.GenerativeModel(
             model_name=self.model,
             system_instruction=system if system else None,
+            tools=None if reasoning is not False else [],
         )
 
         generation_config = types.GenerationConfig(
@@ -440,6 +441,7 @@ class GoogleLLMClient(BaseLLMClient):
         system: str = "",
         temperature: float = 0.0,
         images: list[str] | None = None,
+        reasoning: bool | None = None,
     ) -> GeminiResponse:
         """Generate response with comprehensive metadata including usage, safety ratings, and finish reasons.
         
@@ -465,13 +467,13 @@ class GoogleLLMClient(BaseLLMClient):
         # If we have key rotation enabled, use it
         if self._key_rotation_manager:
             return self._key_rotation_manager.execute_with_rotation(
-                operation=lambda key: self._execute_generation_detailed(key, prompt, system, temperature, images),
+                operation=lambda key: self._execute_generation_detailed(key, prompt, system, temperature, images, reasoning),
                 is_rate_limit_error=self._is_rate_limit_error
             )
         
         # Single key mode
         try:
-            return self._execute_generation_detailed(self._keys[0], prompt, system, temperature, images)
+            return self._execute_generation_detailed(self._keys[0], prompt, system, temperature, images, reasoning)
         except Exception as e:
             # Check for rate limit errors (HTTP 429)
             if self._is_rate_limit_error(e):
@@ -484,7 +486,8 @@ class GoogleLLMClient(BaseLLMClient):
         system: str = "",
         temperature: float = 0.0,
         images: list[str] | None = None,
+        reasoning: bool | None = None,
     ) -> str:
         """Generate text response (backward compatibility). Use generate_detailed() for full metadata."""
-        response = self.generate_detailed(prompt, system, temperature, images)
+        response = self.generate_detailed(prompt, system, temperature, images, reasoning)
         return response.text

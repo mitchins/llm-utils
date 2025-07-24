@@ -39,6 +39,7 @@ class BaseLLMClient(ABC):
         system: str = "",
         temperature: float = 0.0,
         images: list[str] | None = None,
+        reasoning: bool | None = None,
     ) -> str:
         """
         (Internal) Generate a response from the language model.
@@ -68,6 +69,7 @@ class BaseLLMClient(ABC):
         system: str = "",
         temperature: float = 0.0,
         images: list[str] | None = None,
+        reasoning: bool | None = None,
     ) -> str:
         """
         Generate a response from the language model with automatic retry logic.
@@ -90,7 +92,7 @@ class BaseLLMClient(ABC):
         retries_left = self.max_retries
         while True:
             try:
-                return self._generate(prompt, system=system, temperature=temperature, images=images)
+                return self._generate(prompt, system=system, temperature=temperature, images=images, reasoning=reasoning)
             except RateLimitExceeded as e:
                 if retries_left > 0:
                     logger.warning(f"Rate limit exceeded. Retrying in {self.retry_interval} seconds... ({retries_left} retries left)")

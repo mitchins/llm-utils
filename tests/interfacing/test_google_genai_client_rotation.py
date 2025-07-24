@@ -41,7 +41,7 @@ class TestKeyRotationIntegration:
     def test_single_key_mode_backward_compatibility(self, monkeypatch):
         """Test that single key mode works as before."""
         monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
-        monkeypatch.setattr(genai, "GenerativeModel", lambda model_name, system_instruction=None: DummyModel(model_name, system_instruction))
+        monkeypatch.setattr(genai, "GenerativeModel", lambda model_name, system_instruction=None, tools=None: DummyModel(model_name, system_instruction))
         
         client = GoogleLLMClient(model="gemini", api_key="single_key")
         result = client.generate("test")
@@ -84,7 +84,7 @@ class TestKeyRotationIntegration:
         monkeypatch.setattr(genai, "configure", mock_configure)
         
         call_count = 0
-        def mock_model_factory(model_name, system_instruction=None):
+        def mock_model_factory(model_name, system_instruction=None, tools=None):
             mock_model = DummyModel(model_name, system_instruction)
             
             def generate_content_with_rotation(*args, **kwargs):
@@ -115,7 +115,7 @@ class TestKeyRotationIntegration:
         """Test that exhausting all keys raises RateLimitExceeded."""
         monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
         
-        def mock_model_factory(model_name, system_instruction=None):
+        def mock_model_factory(model_name, system_instruction=None, tools=None):
             mock_model = DummyModel(model_name, system_instruction)
             mock_model.generate_content = lambda *args, **kwargs: (_ for _ in ()).throw(RateLimitError("Rate limit exceeded"))
             return mock_model
@@ -139,7 +139,7 @@ class TestKeyRotationIntegration:
         monkeypatch.setattr(genai, "configure", mock_configure)
         
         call_count = 0
-        def mock_model_factory(model_name, system_instruction=None):
+        def mock_model_factory(model_name, system_instruction=None, tools=None):
             mock_model = DummyModel(model_name, system_instruction)
             
             def generate_content_with_error(*args, **kwargs):
@@ -170,7 +170,7 @@ class TestKeyRotationIntegration:
         monkeypatch.setattr(genai, "configure", mock_configure)
         
         call_count = 0
-        def mock_model_factory(model_name, system_instruction=None):
+        def mock_model_factory(model_name, system_instruction=None, tools=None):
             mock_model = DummyModel(model_name, system_instruction)
             
             def generate_content_selective(*args, **kwargs):
