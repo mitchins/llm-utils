@@ -27,20 +27,13 @@ def test_generate_from_file(tmp_path):
     path = tmp_path / "data.json"
     path.write_text(json.dumps(data))
     client = MockLLMClient(str(path), model_name="m2")
-    assert client.generate("ping", temperature=0.5) == "pong"
+    assert client.generate("ping", temperature=0.5, reasoning=True) == "pong"
 
 
 def test_unmatched_request_raises():
     client = MockLLMClient([], model_name="none")
     with pytest.raises(LLMError):
         client.generate("something")
-
-
-def test_reasoning_not_implemented():
-    client = MockLLMClient([], model_name="none")
-    with pytest.raises(NotImplementedError):
-        client.generate("something", reasoning=True)
-
 
 # Additional tests
 def test_exception_in_responses_raises():

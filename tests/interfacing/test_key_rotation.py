@@ -5,7 +5,8 @@ from llm_utils.clients.key_rotation import (
     CircularRotationStrategy,
     KeyRotationStrategy
 )
-from llm_utils.clients.base import RateLimitExceeded
+from llm_utils.clients.base import RateLimitExceeded, NoValidAPIKeysError
+from google.api_core.exceptions import InvalidArgument
 
 
 class MockStrategy(KeyRotationStrategy):
@@ -233,3 +234,34 @@ class TestExecuteWithRotation:
         # Reset and verify key2 is tried first next time
         manager.reset_rotation()
         assert manager.get_initial_key() == "key2"
+
+
+    def test_invalid_key_then_success_on_second_key(self):
+        # First key invalid, second key works
+        manager = KeyRotationManager(["badkey", "goodkey"])
+
+        def mock_operation(key):
+            if key == "badkey":
+                raise InvalidArgument("API key not valid. Please pass a valid API key.")
+            return f"success with {key}"
+
+        def is_rate_limit(e):
+            return False
+
+        result = manager.execute_with_rotation(mock_operation, is_rate_limit)
+        assert result == "success with goodkey"
+        # badkey should be removed
+        assert manager.available_keys == ["goodkey"]
+
+    def test_all_invalid_keys_exhausted_raises_no_valid_keys_error(self):
+        manager = KeyRotationManager(["onlykey"])
+
+        def mock_operation(key):
+            raise InvalidArgument("API key not valid. Please pass a valid API key.")
+
+        def is_rate_limit(e):
+            return False
+
+        with pytest.raises(NoValidAPIKeysError) as exc_info:
+            manager.execute_with_rotation(mock_operation, is_rate_limit)
+        assert "All 1 API keys invalid" in str(exc_info.value)

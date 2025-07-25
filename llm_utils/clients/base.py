@@ -17,6 +17,10 @@ class RateLimitExceeded(LLMError):
         super().__init__(details)
 
 
+class NoValidAPIKeysError(RateLimitExceeded):
+    """Exception raised when all API keys are invalid or exhausted."""
+
+
 class BaseLLMClient(ABC):
     def __init__(self, model_name=None, system_prompt=None, max_retries: int = 1, retry_interval: int = 5):
         """
