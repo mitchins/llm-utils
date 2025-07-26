@@ -1,12 +1,28 @@
+# Stub google.api_core.exceptions if not installed
+import sys
+import types
+if 'google' not in sys.modules:
+    google = types.ModuleType('google')
+    api_core = types.ModuleType('google.api_core')
+    exceptions = types.ModuleType('google.api_core.exceptions')
+    class InvalidArgument(Exception):
+        pass
+    exceptions.InvalidArgument = InvalidArgument
+    api_core.exceptions = exceptions
+    google.api_core = api_core
+    sys.modules['google'] = google
+    sys.modules['google.api_core'] = api_core
+    sys.modules['google.api_core.exceptions'] = exceptions
 import pytest
 from unittest.mock import Mock, call
 from llm_utils.clients.key_rotation import (
-    KeyRotationManager, 
+    KeyRotationManager,
     CircularRotationStrategy,
     KeyRotationStrategy
 )
 from llm_utils.clients.base import RateLimitExceeded, NoValidAPIKeysError
 from google.api_core.exceptions import InvalidArgument
+
 
 
 class MockStrategy(KeyRotationStrategy):
@@ -265,3 +281,99 @@ class TestExecuteWithRotation:
         with pytest.raises(NoValidAPIKeysError) as exc_info:
             manager.execute_with_rotation(mock_operation, is_rate_limit)
         assert "All 1 API keys invalid" in str(exc_info.value)
+
+
+# --- Additional Tests ---
+
+
+class TestKeyRemovalClearsLastIndex:
+    def test_remove_key_clears_last_working_index(self):
+        # Setup manager with three keys and a circular strategy
+        manager = KeyRotationManager(["k1", "k2", "k3"])
+        # Prime rotation and mark "k2" as working
+        first = manager.get_initial_key()
+        assert first == "k1"
+        # Simulate success on "k2"
+        manager.mark_key_success("k2")
+        # Ensure strategy would start with "k2"
+        manager.reset_rotation()
+        assert manager.get_initial_key() == "k2"
+        # Remove "k2" and verify last_working_index is cleared internally
+        manager.remove_key("k2")
+        strategy = manager._strategy
+        # After removal, last_working_index should be None
+        assert getattr(strategy, "_last_working_index") is None
+        # Now initial key should default to first available key "k1"
+        assert manager.get_initial_key() == "k1"
+
+
+# --- Additional Tests ---
+
+class TestMixedInvalidAndRateLimit:
+    def test_mixed_invalid_and_rate_limit(self):
+        """
+        badkey1 -> InvalidArgument
+        badkey2 -> InvalidArgument
+        ratelimited -> 429 rate limit
+        goodkey -> success
+        """
+        keys = ["badkey1", "badkey2", "ratelimited", "goodkey"]
+        manager = KeyRotationManager(keys)
+
+        def mock_operation(key):
+            if key.startswith("badkey"):
+                # Simulate permanently invalid keys
+                raise InvalidArgument("API key not valid")
+            if key == "ratelimited":
+                raise Exception("429 Too Many Requests")
+            return f"success with {key}"
+
+        # Simple detector that only cares about the google 429 string
+        def is_rate_limit(e):
+            return "429" in str(e)
+
+        result = manager.execute_with_rotation(mock_operation, is_rate_limit)
+        assert result == "success with goodkey"
+        # Invalid keys should be removed, ratelimited key retained
+        assert manager.available_keys == ["ratelimited", "goodkey"]
+
+
+class TestSuccessfulKeyPersistsAcrossExecutions:
+    def test_successful_key_prioritized_after_previous_success(self):
+        """
+        First run:
+          key1 -> 429
+          key2 -> success
+        Second run should start with key2 immediately.
+        """
+        manager = KeyRotationManager(["key1", "key2"])
+
+        call_log = []
+
+        def operation_first_run(key):
+            call_log.append(key)
+            if key == "key1":
+                raise Exception("429 rate limit")
+            return f"success with {key}"
+
+        def is_rate_limit(e):
+            return "429" in str(e)
+
+        # First execution: should rotate to key2
+        result1 = manager.execute_with_rotation(operation_first_run, is_rate_limit)
+        assert result1 == "success with key2"
+        assert call_log == ["key1", "key2"]
+
+        # Reset external call log
+        call_log.clear()
+
+        # Second execution: should start immediately with key2 (no rotation)
+        def operation_second_run(key):
+            call_log.append(key)
+            return f"success again with {key}"
+
+        result2 = manager.execute_with_rotation(operation_second_run, is_rate_limit)
+        assert result2 == "success again with key2"
+        # Only one call because key2 tried first
+        assert call_log == ["key2"]
+

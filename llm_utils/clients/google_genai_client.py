@@ -466,8 +466,16 @@ class GoogleLLMClient(BaseLLMClient):
 
         # If we have key rotation enabled, use it
         if self._key_rotation_manager:
+            attempt = 0
+            def operation_with_logging(key):
+                nonlocal attempt
+                attempt += 1
+                if attempt > 1:
+                    total_keys = len(self._keys)
+                    logger.info(f"Rotating API key {attempt}/{total_keys}")
+                return self._execute_generation_detailed(key, prompt, system, temperature, images, reasoning)
             return self._key_rotation_manager.execute_with_rotation(
-                operation=lambda key: self._execute_generation_detailed(key, prompt, system, temperature, images, reasoning),
+                operation=operation_with_logging,
                 is_rate_limit_error=self._is_rate_limit_error
             )
         

@@ -139,6 +139,9 @@ class KeyRotationManager:
         except ValueError:
             pass
         self.reset_rotation()
+        # Clear last working index to avoid stale reference after key removal
+        if isinstance(self._strategy, CircularRotationStrategy):
+            self._strategy._last_working_index = None
     
     def reset_rotation(self) -> None:
         """Reset rotation state for a fresh cycle."""
