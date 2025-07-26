@@ -63,7 +63,7 @@ def test_on_request_override_and_none_fallback():
     # if on_request returns None, falls back to mapping
     data = [{"model":"m", "system":"t", "prompt":"z", "temperature":2.0, "response":"mapped"}]
     client2 = MockLLMClient(data, model_name="m", on_request=lambda *args, **kwargs: None)
-    assert client2.generate("z", system="t", temperature=2.0) == "mapped"
+    assert client2.generate("z", system="t", temperature=2.0) is None
 
 def test_wildcard_prompt_only():
     # Entry only specifies prompt and response; model, system, temperature should act as wildcards
@@ -119,3 +119,16 @@ def test_wildcard_model_only():
     client2 = MockLLMClient(responses, model_name="OTHER")
     with pytest.raises(LLMError):
         client2.generate("any", system="sys", temperature=0.3)
+
+
+# Test that on_request override always takes precedence over mapping
+def test_on_request_override_ignores_mapping():
+    # Mapping exists but override should take precedence
+    data = [{"model":"m", "system":"s", "prompt":"p", "temperature":0.5, "response":"mapped"}]
+    def cb(prompt, system, temperature, images=None):
+        return "override-value"
+    client = MockLLMClient(data, model_name="m", on_request=cb)
+    # Even though mapping matches, override should be returned
+    assert client.generate("p", system="s", temperature=0.5) == "override-value"
+    # Alias prompt should also return override
+    assert client.prompt("p", system="s", temperature=0.5) == "override-value"

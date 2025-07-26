@@ -102,8 +102,7 @@ class MockLLMClient(BaseLLMClient):
             raise self._only_error
         if self._on_request:
             override = self._on_request(prompt=prompt, system=system, temperature=temperature, images=images)
-            if override is not None:
-                return override
+            return override
         key = self._make_key(self.model, system, prompt, temperature)
         # Wildcard match: None in stored key matches any value
         for stored_key, stored_resp in self._response_map.items():

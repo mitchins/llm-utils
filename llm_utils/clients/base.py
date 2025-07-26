@@ -17,8 +17,14 @@ class RateLimitExceeded(LLMError):
         super().__init__(details)
 
 
+
 class NoValidAPIKeysError(RateLimitExceeded):
     """Exception raised when all API keys are invalid or exhausted."""
+
+
+# New error for blank/None LLM responses
+class NoLLMResponseError(LLMError):
+    """Exception raised when the LLM returns no content (blank or None)."""
 
 
 class BaseLLMClient(ABC):

@@ -1,5 +1,6 @@
 import re
 from enum import Enum
+import json
 
 class LLMResponse(Enum):
     AFFIRMATIVE = "AFFIRMATIVE"
@@ -71,3 +72,10 @@ def extract_json_structure(text):
         return cleaned
 
     return text
+
+def extract_and_parse(text: str):
+    """
+    Extract embedded JSON from text and parse it into Python objects.
+    """
+    cleaned = extract_json_structure(text)
+    return json.loads(cleaned)
