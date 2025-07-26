@@ -1,5 +1,6 @@
 import unittest
-from llm_utils.llm_parsers import process_llm_response, LLMResponse, extract_json_structure
+import json
+from llm_utils.llm_parsers import process_llm_response, LLMResponse, extract_json_structure, extract_and_parse
 from unittest.mock import MagicMock
 
 
@@ -218,6 +219,31 @@ class TestJsonExtractionUtility(unittest.TestCase):
         expected = '[\n  {"name": "Alice", "aliases": []},\n  {"name": "Bob", "aliases": []}\n]'
         result = extract_json_structure(text)
         self.assertEqual(result.strip(), expected.strip())
+
+class TestExtractAndParse(unittest.TestCase):
+    def test_extract_and_parse_plain_json(self):
+        text = '[{"a":1}, {"b":[2,3]}]'
+        result = extract_and_parse(text)
+        self.assertIsInstance(result, list)
+        self.assertEqual(result, [{"a":1}, {"b":[2,3]}])
+
+    def test_extract_and_parse_fenced_block(self):
+        text = """```json
+        {"x": 10, "y": [true, false]}
+        ```"""
+        result = extract_and_parse(text)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result, {"x":10, "y":[True, False]})
+
+    def test_extract_and_parse_with_noise(self):
+        text = "Note:\nHere is data:\n[ {\"k\": \"v\"} ] extra"
+        result = extract_and_parse(text)
+        self.assertEqual(result, [{"k":"v"}])
+
+    def test_extract_and_parse_invalid_json_raises(self):
+        text = "Not JSON here"
+        with self.assertRaises(json.JSONDecodeError):
+            extract_and_parse(text)
 
 if __name__ == '__main__':
     unittest.main()
