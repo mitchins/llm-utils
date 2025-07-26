@@ -202,3 +202,94 @@ class TestKeyRotationIntegration:
         assert result2 == "ok"
         assert call_count == 1  # Should succeed immediately
         assert configure_calls[0] == "key2"  # Should start with key2
+
+    def test_resource_exhausted_triggers_rotation(self, monkeypatch):
+        """ResourceExhausted exception variant should trigger rotation."""
+        from llm_utils.clients.google_genai_client import ResourceExhausted
+
+        monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
+
+        call_count = 0
+        def mock_model_factory(model_name, system_instruction=None, tools=None):
+            mock_model = DummyModel(model_name, system_instruction)
+
+            def generate_content_with_exhausted(*args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    # First attempt raises ResourceExhausted (429 equivalent)
+                    raise ResourceExhausted("RESOURCE_EXHAUSTED: Too Many Requests")
+                return DummyResponse()
+
+            mock_model.generate_content = generate_content_with_exhausted
+            return mock_model
+
+        monkeypatch.setattr(genai, "GenerativeModel", mock_model_factory)
+
+        client = GoogleLLMClient(model="gemini", api_key=["keyA", "keyB"])
+        result = client.generate("prompt")
+        assert result == "ok"
+        assert call_count == 2  # one fail + one success
+
+    def test_retry_error_unwrapped_triggers_rotation(self, monkeypatch):
+        """Wrapped RetryError.last_exc should be detected as rate-limit."""
+        from llm_utils.clients.google_genai_client import RetryError, ResourceExhausted
+
+        monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
+
+        # Build a fake RetryError that wraps ResourceExhausted
+        last_exc = ResourceExhausted("RESOURCE_EXHAUSTED: Too Many Requests")
+        # RetryError signature can be (message, cause); pass last_exc as cause for real google impl,
+        # for stub it is harmless.
+        retry_err = RetryError("wrapped", last_exc)
+        retry_err.last_exc = last_exc  # type: ignore[attr-defined]
+
+        call_count = 0
+        def mock_model_factory(model_name, system_instruction=None, tools=None):
+            mock_model = DummyModel(model_name, system_instruction)
+
+            def generate_content_with_retry(*args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    raise retry_err
+                return DummyResponse()
+
+            mock_model.generate_content = generate_content_with_retry
+            return mock_model
+
+        monkeypatch.setattr(genai, "GenerativeModel", mock_model_factory)
+
+        client = GoogleLLMClient(model="gemini", api_key=["keyX", "keyY"])
+        result = client.generate("prompt")
+        assert result == "ok"
+        assert call_count == 2  # rotated to second key
+
+    def test_rotation_logging_message(self, monkeypatch, caplog):
+        """Verify that 'Rotating API key X/Y' log appears after a rotation."""
+        monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
+
+        call_count = 0
+        def mock_model_factory(model_name, system_instruction=None, tools=None):
+            mock_model = DummyModel(model_name, system_instruction)
+
+            def generate_content_rotate(*args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    raise RateLimitError("429 Too Many Requests")
+                return DummyResponse()
+
+            mock_model.generate_content = generate_content_rotate
+            return mock_model
+
+        monkeypatch.setattr(genai, "GenerativeModel", mock_model_factory)
+
+        from llm_utils.clients import google_genai_client as client_mod
+        caplog.set_level("INFO", logger=client_mod.logger.name)
+
+        client = GoogleLLMClient(model="gemini", api_key=["k1", "k2"])
+        result = client.generate("prompt")
+        assert result == "ok"
+        # After rotation we should see info log with 'Rotating API key'
+        assert any("Rotating API key 2/" in rec.message for rec in caplog.records)

@@ -1,5 +1,6 @@
 import logging
 import base64
+import threading
 from typing import Union, List, Optional, Dict, Any
 from dataclasses import dataclass
 from llm_utils.clients.base import BaseLLMClient, LLMError, RateLimitExceeded
@@ -17,12 +18,25 @@ def _extract_enum_value(obj, fallback_value: str = "UNKNOWN") -> str:
     return str(obj)
 
 
+
 try:
     import google.generativeai as genai
     from google.generativeai import types
     from google.generativeai.types import HarmCategory, HarmBlockThreshold
 except ImportError:
     logger.warning("Google Generative AI library is not installed. Some features may be unavailable.")
+
+# Gracefully handle missing google.api_core in test environments
+try:
+    from google.api_core.exceptions import ResourceExhausted, RetryError
+except ImportError:  # fall back to dummy types
+    class ResourceExhausted(Exception):
+        pass
+    class RetryError(Exception):
+        last_exc: Exception | None = None
+
+# genai uses global config; protect it in multithreaded scenarios
+_genai_lock = threading.Lock()
 
 
 class GeminiContentBlockedException(LLMError):
@@ -362,10 +376,21 @@ class GoogleLLMClient(BaseLLMClient):
         base_message += " - consider reducing input size or increasing max_tokens"
         return base_message
 
-    def _is_rate_limit_error(self, exception: Exception) -> bool:
-        """Check if an exception is a rate limit error."""
-        return (hasattr(exception, 'status_code') and exception.status_code == 429) or \
-               "429" in str(exception) or "rate limit" in str(exception).lower()
+    def _is_rate_limit_error(self, exc: Exception) -> bool:
+        """Check if an exception is a rate limit error (robust detection)."""
+        # Unwrap google RetryError to inspect the underlying cause
+        if isinstance(exc, RetryError) and getattr(exc, "last_exc", None):
+            exc = exc.last_exc
+
+        msg = str(exc).lower()
+        return (
+            getattr(exc, "status_code", None) == 429
+            or getattr(exc, "code", None) == 429  # httpx / urllib style
+            or isinstance(exc, ResourceExhausted)
+            or "429" in msg
+            or "too many requests" in msg
+            or "rate limit" in msg
+        )
 
     def _execute_generation(self, api_key: str, prompt: str, system: str, 
                           temperature: float, images: list[str] | None) -> str:
@@ -376,8 +401,9 @@ class GoogleLLMClient(BaseLLMClient):
     def _execute_generation_detailed(self, api_key: str, prompt: str, system: str, 
                                    temperature: float, images: list[str] | None, reasoning: bool | None) -> GeminiResponse:
         """Execute generation and return comprehensive response with all metadata."""
-        # Configure the API key for this request
-        genai.configure(api_key=api_key)
+        # Configure the API key for this request (global setting – use a mutex)
+        with _genai_lock:
+            genai.configure(api_key=api_key)
         
         model_instance = genai.GenerativeModel(
             model_name=self.model,
