@@ -102,6 +102,9 @@ class MockLLMClient(BaseLLMClient):
             raise self._only_error
         if self._on_request:
             override = self._on_request(prompt=prompt, system=system, temperature=temperature, images=images)
+            # If the override is an exception, re-raise it to mimic real LLM errors
+            if isinstance(override, Exception):
+                raise override
             return override
         key = self._make_key(self.model, system, prompt, temperature)
         # Wildcard match: None in stored key matches any value
