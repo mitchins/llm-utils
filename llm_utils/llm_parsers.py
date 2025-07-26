@@ -59,6 +59,14 @@ def extract_json_structure(text):
     # Remove <think>...</think> or <reasoning>...</reasoning> sections if present
     text = scrub_think(text)
 
+    # Try to parse the entire text as JSON first
+    try:
+        parsed = json.loads(text)
+        # Return a canonical JSON string (stripping extraneous whitespace)
+        return json.dumps(parsed, ensure_ascii=False)
+    except Exception:
+        pass
+
     # Try markdown-style fenced block first
     match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
     if match:

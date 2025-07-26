@@ -220,6 +220,16 @@ class TestJsonExtractionUtility(unittest.TestCase):
         result = extract_json_structure(text)
         self.assertEqual(result.strip(), expected.strip())
 
+    def test_plain_json_object_only(self):
+        text = '{"key": "value", "list": [1, 2, 3]}'
+        result = extract_json_structure(text)
+        self.assertEqual(result, text)
+
+    def test_plain_json_with_whitespace(self):
+        text = '   { "foo": "bar", "baz": 123 }   '
+        result = extract_json_structure(text)
+        self.assertEqual(result, '{"foo": "bar", "baz": 123}')
+
 class TestExtractAndParse(unittest.TestCase):
     def test_extract_and_parse_plain_json(self):
         text = '[{"a":1}, {"b":[2,3]}]'
