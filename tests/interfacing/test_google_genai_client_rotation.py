@@ -110,6 +110,8 @@ class TestKeyRotationIntegration:
         assert "key1" in configure_calls
         assert "key2" in configure_calls  
         assert "key3" in configure_calls
+        # Ensure the last configure call corresponds to the key that finally succeeded
+        assert configure_calls[-1] == "key3"
     
     def test_all_keys_exhausted_raises_rate_limit_exceeded(self, monkeypatch):
         """Test that exhausting all keys raises RateLimitExceeded."""
