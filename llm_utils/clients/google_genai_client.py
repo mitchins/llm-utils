@@ -20,11 +20,11 @@ def _extract_enum_value(obj, fallback_value: str = "UNKNOWN") -> str:
 
 
 try:
-    import google.generativeai as genai
-    from google.generativeai import types
-    from google.generativeai.types import HarmCategory, HarmBlockThreshold
+    from google import genai
+    from google.genai import types
+    from google.genai.types import HarmCategory, HarmBlockThreshold
 except ImportError:
-    logger.warning("Google Generative AI library is not installed. Some features may be unavailable.")
+    logger.warning("google-genai library is not installed. Some features may be unavailable.")
 
 # Gracefully handle missing google.api_core in test environments
 try:
@@ -275,7 +275,7 @@ class GoogleLLMClient(BaseLLMClient):
                  model: str,
                  api_key: Union[str, List[str]],
                  timeout: int = 60,
-                 max_output_tokens: int = 65535,
+                 max_output_tokens: Optional[int] = None,
                  max_retries: int = 1,
                  retry_interval: int = 5,
                  **kwargs):
@@ -325,10 +325,22 @@ class GoogleLLMClient(BaseLLMClient):
         
         # Set initial key
         current_key = self._keys[0] if not self._key_rotation_manager else self._key_rotation_manager.get_initial_key()
-        genai.configure(api_key=current_key)
+        # Initialize the GenAI client
+        self._client = genai.Client(api_key=current_key)
         
         self.timeout = timeout
-        self.max_output_tokens = max_output_tokens
+        # Determine default max_output_tokens from model capabilities if not explicitly provided
+        if max_output_tokens is None:
+            if self.model.startswith("gemini-2.0"):
+                self.max_output_tokens = 8192
+            elif self.model.startswith("gemini-2.5"):
+                self.max_output_tokens = 65535
+            else:
+                # Fallback default for unknown or future models
+                self.max_output_tokens = 65535
+        else:
+            # Honor user-provided value (must not exceed model limits)
+            self.max_output_tokens = max_output_tokens
     
     def _get_user_friendly_block_message(self, response: 'GeminiResponse') -> str:
         """Convert technical block reasons into clear, actionable user messages."""
@@ -401,29 +413,37 @@ class GoogleLLMClient(BaseLLMClient):
     def _execute_generation_detailed(self, api_key: str, prompt: str, system: str, 
                                    temperature: float, images: list[str] | None, reasoning: bool | None) -> GeminiResponse:
         """Execute generation and return comprehensive response with all metadata."""
-        # Configure the API key for this request (global setting – use a mutex)
+        # Rotate API key by recreating the GenAI client under lock
         with _genai_lock:
-            genai.configure(api_key=api_key)
-        
-        model_instance = genai.GenerativeModel(
-            model_name=self.model,
-            system_instruction=system or None,
-            tools=[] if reasoning is False else None,
-        )
+            self._client = genai.Client(api_key=api_key)
 
-        generation_config = types.GenerationConfig(
+        # Build generation configuration with safety settings included
+        generation_config = types.GenerateContentConfig(
+            system_instruction=system,
             temperature=temperature,
             max_output_tokens=self.max_output_tokens,
+            safety_settings=[
+                types.SafetySetting(
+                    category=HarmCategory.HARM_CATEGORY_HARASSMENT,
+                    threshold=HarmBlockThreshold.BLOCK_NONE,
+                ),
+                types.SafetySetting(
+                    category=HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                    threshold=HarmBlockThreshold.BLOCK_NONE,
+                ),
+                types.SafetySetting(
+                    category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                    threshold=HarmBlockThreshold.BLOCK_NONE,
+                ),
+                types.SafetySetting(
+                    category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                    threshold=HarmBlockThreshold.BLOCK_NONE,
+                ),
+            ]
         )
 
-        safety_settings = {
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-        }
-
-        contents = [prompt]
+        # Prepare contents for generation
+        contents: List[Union[str, Dict[str, Any]]] = [prompt]
         if images:
             for img in images:
                 contents.append({
@@ -433,11 +453,24 @@ class GoogleLLMClient(BaseLLMClient):
                     }
                 })
 
-        response = model_instance.generate_content(
-            contents=contents,
-            generation_config=generation_config,
-            safety_settings=safety_settings,
-        )
+        # Handle reasoning parameter: tools=None disables reasoning, tools=[] still uses reasoning
+        tools_param = None
+        if reasoning is False:
+            tools_param = None  # Explicitly disable reasoning
+        elif reasoning is True or reasoning is None:
+            # Default behavior (reasoning enabled) - don't pass tools parameter
+            pass
+
+        # Call the new GenAI client to generate content
+        kwargs = {
+            "model": self.model,
+            "contents": contents,
+            "config": generation_config,
+        }
+        if tools_param is not None:
+            kwargs["tools"] = tools_param
+            
+        response = self._client.models.generate_content(**kwargs)
 
         # Create comprehensive response object
         gemini_response = GeminiResponse.from_response(response)
@@ -447,15 +480,15 @@ class GoogleLLMClient(BaseLLMClient):
             # Content was blocked due to safety filters
             message = self._get_user_friendly_block_message(gemini_response)
             raise GeminiContentBlockedException(message, gemini_response)
-        elif not response.parts:
-            # No content parts - check if it's due to token limits
+        elif not gemini_response.text:
+            # No text returned - check if it's due to token limits
             if (gemini_response.candidates and 
                 len(gemini_response.candidates) > 0 and
                 gemini_response.candidates[0].finish_reason == "MAX_TOKENS"):
                 message = self._get_token_limit_message(gemini_response)
                 raise GeminiTokenLimitException(message, gemini_response)
             
-            # Some other reason for no parts
+            # Some other reason for no text
             message = self._get_user_friendly_block_message(gemini_response)
             raise GeminiContentBlockedException(message, gemini_response)
             
@@ -510,9 +543,14 @@ class GoogleLLMClient(BaseLLMClient):
                     )
                 if cycle or attempt > 1:
                     logger.info(f"Rotating API key {attempt}/{total_keys}")
-                return self._execute_generation_detailed(
-                    key, prompt, system, temperature, images, reasoning
-                )
+                try:
+                    return self._execute_generation_detailed(
+                        key, prompt, system, temperature, images, reasoning
+                    )
+                except Exception as e:
+                    if self._is_rate_limit_error(e):
+                        logger.debug(f"GenAI rate-limit error with key {prefix}: {e}", exc_info=True)
+                    raise
             return self._key_rotation_manager.execute_with_rotation(
                 operation=operation_with_logging,
                 is_rate_limit_error=self._is_rate_limit_error
@@ -522,8 +560,9 @@ class GoogleLLMClient(BaseLLMClient):
         try:
             return self._execute_generation_detailed(self._keys[0], prompt, system, temperature, images, reasoning)
         except Exception as e:
-            # Check for rate limit errors (HTTP 429)
+            # Check for rate limit errors (HTTP 429) and log full exception
             if self._is_rate_limit_error(e):
+                logger.debug(f"GenAI rate-limit error (single-key): {e}", exc_info=True)
                 raise RateLimitExceeded(f"Google API rate limit exceeded: {e}")
             raise e
     

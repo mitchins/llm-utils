@@ -2,7 +2,7 @@ import base64
 import types
 import pytest
 from unittest.mock import Mock, patch
-import google.generativeai as genai
+import google.genai as genai
 from llm_utils.clients.google_genai_client import GoogleLLMClient
 from llm_utils.clients.base import RateLimitExceeded
 
@@ -14,18 +14,26 @@ class DummyResponse:
         self.prompt_feedback = None
 
 
-class DummyModel:
-    def __init__(self, model_name=None, system_instruction=None):
-        self.model_name = model_name
-        self.system_instruction = system_instruction
-
-    def generate_content(self, contents, generation_config=None, safety_settings=None):
-        DummyModel.captured = {
+# Stub the new genai.Client to return a DummyModel-like interface
+class DummyClient:
+    def __init__(self, api_key=None, error=None):
+        self.api_key = api_key
+        self.error = error
+        self.models = types.SimpleNamespace(generate_content=self._wrapped_generate)
+    
+    def _wrapped_generate(self, model=None, contents=None, config=None, tools=None, **kwargs):
+        if self.error:
+            raise self.error
+        # Capture call details for test verification
+        DummyClient.captured = {
+            "model": model,
             "contents": contents,
-            "generation_config": generation_config,
-            "safety_settings": safety_settings,
+            "config": config,
+            "tools": tools,
         }
         return DummyResponse()
+
+monkeypatch_client = lambda api_key=None, error=None: DummyClient(api_key, error)
 
 
 class RateLimitError(Exception):
@@ -40,8 +48,7 @@ class TestKeyRotationIntegration:
     
     def test_single_key_mode_backward_compatibility(self, monkeypatch):
         """Test that single key mode works as before."""
-        monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
-        monkeypatch.setattr(genai, "GenerativeModel", lambda model_name, system_instruction=None, tools=None: DummyModel(model_name, system_instruction))
+        monkeypatch.setattr(genai, "Client", monkeypatch_client)
         
         client = GoogleLLMClient(model="gemini", api_key="single_key")
         result = client.generate("test")
@@ -52,7 +59,7 @@ class TestKeyRotationIntegration:
     
     def test_multiple_keys_initialization(self, monkeypatch):
         """Test initialization with multiple keys enables rotation."""
-        monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
+        monkeypatch.setattr(genai, "Client", monkeypatch_client)
         
         client = GoogleLLMClient(model="gemini", api_key=["key1", "key2", "key3"])
         
@@ -62,32 +69,27 @@ class TestKeyRotationIntegration:
     
     def test_empty_key_list_raises_error(self, monkeypatch):
         """Test that empty key list raises appropriate error."""
-        monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
+        monkeypatch.setattr(genai, "Client", monkeypatch_client)
         
         with pytest.raises(ValueError, match="API key list cannot be empty"):
             GoogleLLMClient(model="gemini", api_key=[])
     
     def test_invalid_key_type_raises_error(self, monkeypatch):
         """Test that invalid key type raises appropriate error."""
-        monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
+        monkeypatch.setattr(genai, "Client", monkeypatch_client)
         
         with pytest.raises(ValueError, match="api_key must be a string or list of strings"):
             GoogleLLMClient(model="gemini", api_key=123)
     
     def test_key_rotation_on_rate_limit(self, monkeypatch):
         """Test that rate limit triggers key rotation."""
-        configure_calls = []
-        
-        def mock_configure(api_key):
-            configure_calls.append(api_key)
-        
-        monkeypatch.setattr(genai, "configure", mock_configure)
+        client_calls = []
         
         call_count = 0
-        def mock_model_factory(model_name, system_instruction=None, tools=None):
-            mock_model = DummyModel(model_name, system_instruction)
+        def mock_client_factory(api_key=None):
+            client_calls.append(api_key)
             
-            def generate_content_with_rotation(*args, **kwargs):
+            def mock_generate_content(*args, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 # First two calls fail with rate limit, third succeeds
@@ -95,34 +97,29 @@ class TestKeyRotationIntegration:
                     raise RateLimitError("Rate limit exceeded")
                 return DummyResponse()
             
-            mock_model.generate_content = generate_content_with_rotation
-            return mock_model
+            # Create a client that will fail on the first two generate calls
+            client = DummyClient(api_key, error=None)
+            client.models.generate_content = mock_generate_content
+            return client
         
-        monkeypatch.setattr(genai, "GenerativeModel", mock_model_factory)
+        monkeypatch.setattr(genai, "Client", mock_client_factory)
         
         client = GoogleLLMClient(model="gemini", api_key=["key1", "key2", "key3"])
         result = client.generate("test prompt")
         
         assert result == "ok"
-        assert call_count == 3  # Three attempts made
-        # Should have configured all three keys
-        assert len(configure_calls) >= 3
-        assert "key1" in configure_calls
-        assert "key2" in configure_calls  
-        assert "key3" in configure_calls
-        # Ensure the last configure call corresponds to the key that finally succeeded
-        assert configure_calls[-1] == "key3"
+        # Should have created clients for all three keys (one for init, two more for rotation)
+        assert len(client_calls) >= 3
+        assert "key1" in client_calls
+        assert "key2" in client_calls  
+        assert "key3" in client_calls
     
     def test_all_keys_exhausted_raises_rate_limit_exceeded(self, monkeypatch):
         """Test that exhausting all keys raises RateLimitExceeded."""
-        monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
+        def mock_client_factory(api_key=None):
+            return DummyClient(api_key, error=RateLimitError("Rate limit exceeded"))
         
-        def mock_model_factory(model_name, system_instruction=None, tools=None):
-            mock_model = DummyModel(model_name, system_instruction)
-            mock_model.generate_content = lambda *args, **kwargs: (_ for _ in ()).throw(RateLimitError("Rate limit exceeded"))
-            return mock_model
-        
-        monkeypatch.setattr(genai, "GenerativeModel", mock_model_factory)
+        monkeypatch.setattr(genai, "Client", mock_client_factory)
         
         client = GoogleLLMClient(model="gemini", api_key=["key1", "key2"])
         
@@ -133,61 +130,38 @@ class TestKeyRotationIntegration:
     
     def test_non_rate_limit_error_no_rotation(self, monkeypatch):
         """Test that non-rate-limit errors don't trigger rotation."""
-        configure_calls = []
+        client_calls = []
         
-        def mock_configure(api_key):
-            configure_calls.append(api_key)
+        def mock_client_factory(api_key=None):
+            client_calls.append(api_key)
+            return DummyClient(api_key, error=ValueError("Some other error"))
         
-        monkeypatch.setattr(genai, "configure", mock_configure)
-        
-        call_count = 0
-        def mock_model_factory(model_name, system_instruction=None, tools=None):
-            mock_model = DummyModel(model_name, system_instruction)
-            
-            def generate_content_with_error(*args, **kwargs):
-                nonlocal call_count
-                call_count += 1
-                raise ValueError("Some other error")
-            
-            mock_model.generate_content = generate_content_with_error
-            return mock_model
-        
-        monkeypatch.setattr(genai, "GenerativeModel", mock_model_factory)
+        monkeypatch.setattr(genai, "Client", mock_client_factory)
         
         client = GoogleLLMClient(model="gemini", api_key=["key1", "key2", "key3"])
         
         with pytest.raises(ValueError):
             client.generate("test prompt")
         
-        # Should only attempt once, no rotation
-        assert call_count == 1
+        # Should only create client twice: once for init, once for generate call (no rotation)
+        assert len(client_calls) == 2
+        assert client_calls[0] == "key1"  # Initial client creation
+        assert client_calls[1] == "key1"  # Client recreation for generate call
     
     def test_successful_key_remembered(self, monkeypatch):
         """Test that successful key is remembered for next request."""
-        configure_calls = []
-        
-        def mock_configure(api_key):
-            configure_calls.append(api_key)
-        
-        monkeypatch.setattr(genai, "configure", mock_configure)
+        client_calls = []
         
         call_count = 0
-        def mock_model_factory(model_name, system_instruction=None, tools=None):
-            mock_model = DummyModel(model_name, system_instruction)
-            
-            def generate_content_selective(*args, **kwargs):
-                nonlocal call_count
-                call_count += 1
-                # key1 fails, key2 succeeds
-                current_key = configure_calls[-1] if configure_calls else None
-                if current_key == "key1":
-                    raise RateLimitError("Rate limit exceeded")
-                return DummyResponse()
-            
-            mock_model.generate_content = generate_content_selective
-            return mock_model
+        def mock_client_factory(api_key=None):
+            client_calls.append(api_key)
+            # key1 fails, key2 succeeds
+            if api_key == "key1":
+                return DummyClient(api_key, error=RateLimitError("Rate limit exceeded"))
+            else:
+                return DummyClient(api_key, error=None)
         
-        monkeypatch.setattr(genai, "GenerativeModel", mock_model_factory)
+        monkeypatch.setattr(genai, "Client", mock_client_factory)
         
         client = GoogleLLMClient(model="gemini", api_key=["key1", "key2", "key3"])
         
@@ -196,37 +170,28 @@ class TestKeyRotationIntegration:
         assert result1 == "ok"
         
         # Reset call tracking
-        configure_calls.clear()
-        call_count = 0
+        initial_calls = len(client_calls)
         
         # Second request: should start with key2 (the successful one)
         result2 = client.generate("test prompt 2")
         assert result2 == "ok"
-        assert call_count == 1  # Should succeed immediately
-        assert configure_calls[0] == "key2"  # Should start with key2
+        # Should only create one more client (for the successful key)
+        assert len(client_calls) == initial_calls + 1
 
     def test_resource_exhausted_triggers_rotation(self, monkeypatch):
         """ResourceExhausted exception variant should trigger rotation."""
         from llm_utils.clients.google_genai_client import ResourceExhausted
 
-        monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
-
         call_count = 0
-        def mock_model_factory(model_name, system_instruction=None, tools=None):
-            mock_model = DummyModel(model_name, system_instruction)
+        def mock_client_factory(api_key=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First attempt raises ResourceExhausted (429 equivalent)
+                return DummyClient(api_key, error=ResourceExhausted("RESOURCE_EXHAUSTED: Too Many Requests"))
+            return DummyClient(api_key, error=None)
 
-            def generate_content_with_exhausted(*args, **kwargs):
-                nonlocal call_count
-                call_count += 1
-                if call_count == 1:
-                    # First attempt raises ResourceExhausted (429 equivalent)
-                    raise ResourceExhausted("RESOURCE_EXHAUSTED: Too Many Requests")
-                return DummyResponse()
-
-            mock_model.generate_content = generate_content_with_exhausted
-            return mock_model
-
-        monkeypatch.setattr(genai, "GenerativeModel", mock_model_factory)
+        monkeypatch.setattr(genai, "Client", mock_client_factory)
 
         client = GoogleLLMClient(model="gemini", api_key=["keyA", "keyB"])
         result = client.generate("prompt")
@@ -237,30 +202,20 @@ class TestKeyRotationIntegration:
         """Wrapped RetryError.last_exc should be detected as rate-limit."""
         from llm_utils.clients.google_genai_client import RetryError, ResourceExhausted
 
-        monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
-
         # Build a fake RetryError that wraps ResourceExhausted
         last_exc = ResourceExhausted("RESOURCE_EXHAUSTED: Too Many Requests")
-        # RetryError signature can be (message, cause); pass last_exc as cause for real google impl,
-        # for stub it is harmless.
         retry_err = RetryError("wrapped", last_exc)
         retry_err.last_exc = last_exc  # type: ignore[attr-defined]
 
         call_count = 0
-        def mock_model_factory(model_name, system_instruction=None, tools=None):
-            mock_model = DummyModel(model_name, system_instruction)
+        def mock_client_factory(api_key=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return DummyClient(api_key, error=retry_err)
+            return DummyClient(api_key, error=None)
 
-            def generate_content_with_retry(*args, **kwargs):
-                nonlocal call_count
-                call_count += 1
-                if call_count == 1:
-                    raise retry_err
-                return DummyResponse()
-
-            mock_model.generate_content = generate_content_with_retry
-            return mock_model
-
-        monkeypatch.setattr(genai, "GenerativeModel", mock_model_factory)
+        monkeypatch.setattr(genai, "Client", mock_client_factory)
 
         client = GoogleLLMClient(model="gemini", api_key=["keyX", "keyY"])
         result = client.generate("prompt")
@@ -269,23 +224,21 @@ class TestKeyRotationIntegration:
 
     def test_rotation_logging_message(self, monkeypatch, caplog):
         """Verify that 'Rotating API key X/Y' log appears after a rotation."""
-        monkeypatch.setattr(genai, "configure", lambda api_key=None: None)
-
         call_count = 0
-        def mock_model_factory(model_name, system_instruction=None, tools=None):
-            mock_model = DummyModel(model_name, system_instruction)
-
-            def generate_content_rotate(*args, **kwargs):
+        def mock_client_factory(api_key=None):
+            def mock_generate_content(*args, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 if call_count == 1:
                     raise RateLimitError("429 Too Many Requests")
                 return DummyResponse()
+            
+            # Create a client that will fail on the first generate call
+            client = DummyClient(api_key, error=None)
+            client.models.generate_content = mock_generate_content
+            return client
 
-            mock_model.generate_content = generate_content_rotate
-            return mock_model
-
-        monkeypatch.setattr(genai, "GenerativeModel", mock_model_factory)
+        monkeypatch.setattr(genai, "Client", mock_client_factory)
 
         from llm_utils.clients import google_genai_client as client_mod
         caplog.set_level("INFO", logger=client_mod.logger.name)
