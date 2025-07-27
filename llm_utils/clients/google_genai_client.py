@@ -496,10 +496,17 @@ class GoogleLLMClient(BaseLLMClient):
             def operation_with_logging(key):
                 nonlocal attempt
                 attempt += 1
+                prefix = f"{key[:8]}…" if key else "UNKNOWN"
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        f"Attempt {attempt}/{len(self._keys)} using API key {prefix}"
+                        f"{' (rotating after rate‑limit)' if attempt > 1 else ''}"
+                    )
                 if attempt > 1:
-                    total_keys = len(self._keys)
-                    logger.info(f"Rotating API key {attempt}/{total_keys}")
-                return self._execute_generation_detailed(key, prompt, system, temperature, images, reasoning)
+                    logger.info(f"Rotating API key {attempt}/{len(self._keys)}")
+                return self._execute_generation_detailed(
+                    key, prompt, system, temperature, images, reasoning
+                )
             return self._key_rotation_manager.execute_with_rotation(
                 operation=operation_with_logging,
                 is_rate_limit_error=self._is_rate_limit_error
