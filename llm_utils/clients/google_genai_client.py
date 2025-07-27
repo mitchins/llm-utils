@@ -492,18 +492,24 @@ class GoogleLLMClient(BaseLLMClient):
 
         # If we have key rotation enabled, use it
         if self._key_rotation_manager:
-            attempt = 0
+            total_keys = len(self._keys)
+            attempt = 0          # 1‑based index within the current cycle
+            cycle = 0            # how many full key‑set passes we’ve done
             def operation_with_logging(key):
                 nonlocal attempt
+                nonlocal cycle
                 attempt += 1
+                if attempt > total_keys:
+                    cycle += 1
+                    attempt = 1  # reset for the new cycle
                 prefix = f"{key[:8]}…" if key else "UNKNOWN"
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
-                        f"Attempt {attempt}/{len(self._keys)} using API key {prefix}"
-                        f"{' (rotating after rate‑limit)' if attempt > 1 else ''}"
+                        f"Cycle {cycle} attempt {attempt}/{total_keys} using API key {prefix}"
+                        f"{' (rotating after rate‑limit)' if cycle or attempt > 1 else ''}"
                     )
-                if attempt > 1:
-                    logger.info(f"Rotating API key {attempt}/{len(self._keys)}")
+                if cycle or attempt > 1:
+                    logger.info(f"Rotating API key {attempt}/{total_keys}")
                 return self._execute_generation_detailed(
                     key, prompt, system, temperature, images, reasoning
                 )
