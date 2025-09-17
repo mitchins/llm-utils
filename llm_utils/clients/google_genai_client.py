@@ -416,12 +416,20 @@ class GoogleLLMClient(BaseLLMClient):
         # Rotate API key by recreating the GenAI client under lock
         with _genai_lock:
             self._client = genai.Client(api_key=api_key)
+            
+            # Monkey patch to disable AFC at the client level
+            # Override the default AFC behavior that's causing 10x rate limit issues
+            if hasattr(self._client, '_enable_afc'):
+                self._client._enable_afc = False
+            if hasattr(self._client, 'models') and hasattr(self._client.models, '_enable_afc'):
+                self._client.models._enable_afc = False
 
-        # Build generation configuration with safety settings included
+        # Build generation configuration with safety settings included and AFC disabled
         generation_config = types.GenerateContentConfig(
             system_instruction=system,
             temperature=temperature,
             max_output_tokens=self.max_output_tokens,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             safety_settings=[
                 types.SafetySetting(
                     category=HarmCategory.HARM_CATEGORY_HARASSMENT,
@@ -453,13 +461,8 @@ class GoogleLLMClient(BaseLLMClient):
                     }
                 })
 
-        # Handle reasoning parameter: tools=None disables reasoning, tools=[] still uses reasoning
-        tools_param = None
-        if reasoning is False:
-            tools_param = None  # Explicitly disable reasoning
-        elif reasoning is True or reasoning is None:
-            # Default behavior (reasoning enabled) - don't pass tools parameter
-            pass
+        # AFC is now properly disabled via automatic_function_calling config above
+        # No need for tools parameter when not using tools
 
         # Call the new GenAI client to generate content
         kwargs = {
@@ -467,8 +470,6 @@ class GoogleLLMClient(BaseLLMClient):
             "contents": contents,
             "config": generation_config,
         }
-        if tools_param is not None:
-            kwargs["tools"] = tools_param
             
         response = self._client.models.generate_content(**kwargs)
 
